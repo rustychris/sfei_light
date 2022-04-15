@@ -32,6 +32,8 @@ from stompy import utils
 import seaborn as sns
 from dotmap import DotMap
 from sklearn.model_selection import train_test_split
+import statsmodels.formula.api as smf
+
 from pygam import LinearGAM, s, l, te
 from sklearn.linear_model import LinearRegression
 from math import e
@@ -512,25 +514,71 @@ for site in sites:
     model.gam_ssc[site][model.gam_ssc[site]<=0] = 0.1 # make negative SSC = 0.1 mg/L
     
     # Convert SSC to Kd using local regression of cruise SSC to cruise Kd
+    # 
     iCruise = ~np.isnan(cruiseset) & (~np.isnan(cruiseset_kd))
-    lm = LinearRegression().fit(np.log(cruiseset[iCruise].reshape(-1,1)),np.log(cruiseset_kd[iCruise].reshape(-1,1))) # 
-    x = np.arange(0.01,np.nanmax(cruiseset),10)
-    logx = np.log(x)
-    yfitlog = lm.predict(logx.reshape(-1,1))
-    yfit = e**yfitlog
-    coef = e**lm.intercept_[0]
-    exp = lm.coef_[0][0]
+    # which of the match sites (columns) does each valid, ravelled
+    # data point come from
+    imatch = np.nonzero(iCruise)[1]
+
+    if 0: # previous approach, using sklearn.
+        lm = LinearRegression().fit(np.log(cruiseset[iCruise].reshape(-1,1)),np.log(cruiseset_kd[iCruise].reshape(-1,1))) # 
+        x = np.linspace(0.01,np.nanmax(cruiseset),100)
+        logx = np.log(x)
+        yfitlog = lm.predict(logx.reshape(-1,1))
+        yfit = e**yfitlog
+        coef = e**lm.intercept_[0]
+        exp = lm.coef_[0][0]
     
-    model.gam_kd[site] = coef * model.gam_ssc[site]**exp
+        model.gam_kd[site] = coef * model.gam_ssc[site]**exp
     
-    # Make a figure of the site-specific SSC to Kd conversion
-    fig,ax = plt.subplots(figsize=(6,3)) # 
-    ax.scatter(cruiseset,cruiseset_kd,color='grey')
-    ax.plot(x,yfit,color='k')
-    ax.text(0.05,0.9,'Kd = '+str(round(coef,3))+' * SSS^('+str(round(exp,3))+')',transform=ax.transAxes)
-    ax.set_title(site + ' - CruiseSites:' + str(matchsites))
-    fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_to_Kd.png'))
+        # Make a figure of the site-specific SSC to Kd conversion
+        fig,ax = plt.subplots(figsize=(6,3)) 
+        ax.scatter(cruiseset,cruiseset_kd,color='grey')
+        ax.plot(x,yfit,color='k')
+        ax.text(0.05,0.9,'Kd = '+str(round(coef,3))+' * SSS^('+str(round(exp,3))+')',transform=ax.transAxes)
+        ax.set_title(site + ' - CruiseSites:' + str(matchsites))
+        fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_to_Kd.png'))    
+
+    if 1: # statsmodels, report uncertainty, plot more info        
+        # Fit with statsmodels to get some uncertainty info.
+        df=pd.DataFrame(dict(ssc=cruiseset[iCruise].ravel(),
+                             kd= cruiseset_kd[iCruise].ravel()))
+        mod=smf.ols('np.log(kd) ~ np.log(ssc)',df)
+        fit=mod.fit() 
+        
+        pred=fit.get_prediction(pd.DataFrame(dict(ssc=model.gam_ssc[site])))    
+        model.gam_kd[site] = np.exp(pred.predicted_mean)
     
+        x = np.linspace(0.01,np.nanmax(cruiseset),100)
+        pred=fit.get_prediction(pd.DataFrame(dict(ssc=x)))    
+        fig,ax = plt.subplots(figsize=(6,3)) 
+        ax.scatter(cruiseset[iCruise],cruiseset_kd[iCruise],7,imatch)
+        df_pred=pred.summary_frame() # mean, mean_se, {obs,mean}_ci_{lower,upper}
+        ax.plot(x,np.exp(df_pred['mean']),color='k')
+        ax.fill_between(x,
+                        np.exp(df_pred['obs_ci_lower']),
+                        np.exp(df_pred['obs_ci_upper']),
+                        color='tab:blue',alpha=0.1)
+        ax.fill_between(x,
+                        np.exp(df_pred['mean_ci_lower']),
+                        np.exp(df_pred['mean_ci_upper']),
+                        color='tab:blue',alpha=0.5)
+        ax.plot(x,np.exp(df_pred['mean']),color='k')
+        
+        coef=np.exp(fit.params[0])
+        exp=fit.params[1]
+        cis=fit.conf_int().values # {intercept,exp} x {lower, upper}
+        txts=[f'Kd = {coef:.3f} SSC$^{{{exp:.3f}}}$ */ {np.exp(np.std(fit.resid)):.3f}',
+              f' coef $\in$ [{np.exp(cis[0,0]):.3f},{np.exp(cis[0,1]):.3f}]',
+              f' exp $\in$ [{cis[1,0]:.3f},{cis[1,1,]:.3f}]']
+    
+        ax.text(0.02,0.95,"\n".join(txts),transform=ax.transAxes,va='top')
+        ax.set_title(site + ' - CruiseSites:' + str(matchsites))
+        ax.set_xlabel('SSC (mg/l)')
+        ax.set_ylabel('K$_D$ (m$^{-1}$)')
+        fig.subplots_adjust(bottom=0.16)
+        fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_to_Kd_errs.png'))    
+
     ############################################################################
     
     # Plot the output
