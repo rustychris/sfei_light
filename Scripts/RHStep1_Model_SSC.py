@@ -543,6 +543,12 @@ for site in sites:
         # Fit with statsmodels to get some uncertainty info.
         df=pd.DataFrame(dict(ssc=cruiseset[iCruise].ravel(),
                              kd= cruiseset_kd[iCruise].ravel()))
+        if 1: # limit the fit to when 4.5/Kd>0.5
+            select=4.5/df['kd'] > 0.5
+            print(f"{site}: limit fit to 4.5/Kd>0.5, retains {select.sum()} of {len(df)} samples")
+            df=df[select]
+        else:
+            select=True
         mod=smf.ols('np.log(kd) ~ np.log(ssc)',df)
         fit=mod.fit() 
         
@@ -552,7 +558,7 @@ for site in sites:
         x = np.linspace(0.01,np.nanmax(cruiseset),100)
         pred=fit.get_prediction(pd.DataFrame(dict(ssc=x)))    
         fig,ax = plt.subplots(figsize=(6,3)) 
-        ax.scatter(cruiseset[iCruise],cruiseset_kd[iCruise],7,imatch)
+        ax.scatter(cruiseset[iCruise],cruiseset_kd[iCruise],3+4*select,imatch)
         df_pred=pred.summary_frame() # mean, mean_se, {obs,mean}_ci_{lower,upper}
         ax.plot(x,np.exp(df_pred['mean']),color='k')
         ax.fill_between(x,
