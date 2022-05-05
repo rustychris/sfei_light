@@ -3,6 +3,9 @@
 Test additional terms in GAM fits, possibly reaching into
 R for better GAM support.
 
+This script now just handles the preprocessing for each station, stuffing
+observations into CSV files for subsequent fitting. 
+
 @author: rustyh, adapted from derekr
 """
 
@@ -26,12 +29,14 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from matplotlib.dates import date2num
+import datetime
 import pickle
 
 from stompy import utils
 from stompy import filters
 import seaborn as sns
 from dotmap import DotMap
+from stompy.spatial import interp_nn
 import statsmodels.formula.api as smf
 
 from pygam import LinearGAM, s, l, te
@@ -257,6 +262,221 @@ plt.axis('equal')
 
 #%%
 
+# Local tide processing:
+import xarray as xr
+from stompy.grid import unstructured_grid
+from stompy import harm_decomp
+
+harmonics = xr.open_dataset("../Data_HydroHarmonics/harmonics-wy2013.nc")
+grid_harmonics=unstructured_grid.UnstructuredGrid.read_ugrid(harmonics)
+
+def get_local_tides(site, utm, time_pst):
+    c=grid_harmonics.select_cells_nearest(utm)
+    cc=grid_harmonics.cells_center()
+    dist = utils.dist(cc[c],utm)
+    print(f"Site {site} will get harmonics from point {dist:.1f} m away")
+    omegas=harmonics.omegas.values
+    h_comps = harmonics.stage_harmonics.isel(face=c)
+    u_comps = harmonics.u_harmonics.isel(face=c)
+    v_comps = harmonics.v_harmonics.isel(face=c)
+    
+    h_m2 = h_comps.sel(component='M2')
+    u_m2 = u_comps.sel(component='M2')
+    v_m2 = v_comps.sel(component='M2')
+    
+    # Can we choose principal direction solely from M2 harmonics?
+    # I'm sure this can be done directly, but to avoid introducing
+    # new bugs, fabricate one cycle of h,u,v and then extract principal
+    # theta.
+    t_test=np.linspace(0,2*np.pi,50)
+    # Follow sign convention of harm_decomp.recompose:
+    h_test=h_m2.values[0]*np.cos(t_test - h_m2.values[1])
+    u_test=u_m2.values[0]*np.cos(t_test - u_m2.values[1])
+    v_test=v_m2.values[0]*np.cos(t_test - v_m2.values[1])
+    theta=utils.principal_theta(np.c_[u_test,v_test],h_test,
+                                positive='flood')
+    # report in compass direction, but theta is radians in math convention.
+    print(f"Site {site}: principal flood direction {(90-180*theta/np.pi)%360:.1f} degTrue")
+    
+    # I think the model runs in UTC, so harmonics are referenced to UTC
+    t_utc = (time_pst + np.timedelta64(7,'h') - harmonics.t_ref.values) / np.timedelta64(1,'s')
+    h_pred=harm_decomp.recompose(t_utc,h_comps.values, omegas)
+    u_pred=harm_decomp.recompose(t_utc,u_comps.values, omegas)
+    v_pred=harm_decomp.recompose(t_utc,v_comps.values, omegas)
+    u_flood_pred=u_pred*np.cos(theta) + v_pred*np.sin(theta) 
+
+    return h_pred,u_flood_pred
+
+#%%
+
+# Get local wind:
+
+# Would be nice to go straight from the csv and station coordinates,
+# with something that approximates natural neighbor interpolation
+# to remain consistent with Allie's fields.
+
+from stompy.spatial import proj_utils
+
+# prepare inputs:
+wind_data_dir="../Data_Forcing/WindAK"
+wind_obs_dir=os.path.join(wind_data_dir,"Compiled_Hourly_10m_Winds","data")
+
+def load_obs_wind(year):
+    fn=os.path.join(wind_obs_dir,f"SFB_hourly_wind_and_met_data_{year}.nc")
+    if not os.path.exists(fn):
+        print(f"No wind data for year={year}")
+        return None
+    wind_ds=xr.open_dataset(fn)
+    wind_ds=wind_ds.rename_vars({'time':'julian_day'})
+    
+    # Times are julian day, PST. Wind in m/s
+    t_pst=np.datetime64(f"{year}-01-01") + np.timedelta64(86400,'s')*(wind_ds.julian_day-1.0)
+    wind_ds['time']=('time',),t_pst.values
+    
+    ll=np.c_[ wind_ds.longitude.values, wind_ds.latitude.values]
+    xy=proj_utils.mapper('WGS84','EPSG:26910')(ll)
+    wind_ds['x_utm']=('station',),xy[:,0]
+    wind_ds['y_utm']=('station',),xy[:,1]
+    return wind_ds
+
+
+def get_local_wind(site,utm,time_pst):
+    """
+    Given a utm point [x,y] and array of datetime64 in PST,
+    return u and v, each length of time_pst, with the NN
+    interpolated wind field (from Allie).
+    """
+    time_pst = np.asarray(time_pst) # drop Series wrapper
+    
+    u_years=[]
+    v_years=[]
+
+    t_remaining=time_pst
+    while len(t_remaining):
+        dt=utils.to_datetime(t_remaining[0])
+        year=dt.year
+        next_year=datetime.datetime(year=year+1,month=1,day=1)
+        sel=t_remaining<np.datetime64(next_year)
+
+        t_year=t_remaining[sel]
+        t_remaining=t_remaining[~sel]
+        
+        u_result=np.zeros(len(t_year),np.float64)
+        v_result=np.zeros(len(t_year),np.float64)
+        
+        wind_ds=load_obs_wind(year)
+        if wind_ds is None:
+            # Fill with nan
+            u_result[:]=np.nan
+            v_result[:]=np.nan
+        else:
+            wind_xy=np.c_[ wind_ds.x_utm, wind_ds.y_utm ]
+        
+            # wind time is already in PST
+            # but it suffers from some roundoff, so we can't use
+            # searchsorted directly.
+            t_idxs=utils.nearest(wind_ds.time.values, t_year)
+            
+            t_err = wind_ds.time.values[t_idxs] - t_year
+            tol=np.timedelta64(2,'h')
+            invalid = (t_err<-tol) | (t_err>tol)
+            
+            u10=wind_ds.u10.values # time,station
+            v10=wind_ds.v10.values # 
+            
+            for i,t_idx in enumerate(t_idxs):
+                if invalid[i]:
+                    u_result[i]=np.nan
+                    v_result[i]=np.nan
+                    continue
+                valid = np.isfinite(u10[t_idx,:]+v10[t_idx,:])
+                valid_xy=wind_xy[valid]
+        
+                weights=interp_nn.nn_weights_memo(valid_xy,utm)
+                u_result[i] = (weights*u10[t_idx,valid]).sum()
+                v_result[i] = (weights*v10[t_idx,valid]).sum()
+            
+        u_years.append(u_result)
+        v_years.append(v_result)
+    u_final=np.concatenate(u_years)
+    v_final=np.concatenate(v_years)
+    return u_final, v_final
+
+# DEV for NN code  
+#plt.figure(4).clf() 
+#fig,ax=plt.subplots(num=4)
+#g.plot_edges(color='k',lw=0.4)
+#ax.plot( wind_ds.x_utm, wind_ds.y_utm,'ro')
+#ax.plot( [utm[0]], [utm[1]], 'bo')
+#voronoi_plot_2d(vor2,ax=ax)
+#ax.plot( wind_ds.x_utm.values[valid],
+#         wind_ds.y_utm.values[valid],'go')
+
+
+
+if 0: 
+    # Load the full wind that was maybe the input for the filled 
+    # wnd:
+    sfei_wnd = pickle.load( open(os.path.join(dir_wind,
+                                              'SFEI_Wind_2000-2019.p'),
+                                 'rb')) 
+
+
+    # test and compare against existing
+    # Choose a sample day and interpolation location:
+    t_psts=np.arange(np.datetime64("2016-01-01 00:00"),
+                     np.datetime64("2016-06-01 00:00"),
+                     np.timedelta64(1,'h'))                                      
+    #utm=[570449., 4166144] # random spot near Hayward so we can compare to existing wind.
+    # on top of HWD
+    utm=[577513.17, 4168322.4]
+    
+    u,v = get_local_wind(None,utm,t_psts)
+    speed=np.sqrt(u**2 + v**2)
+    
+    plt.figure(5).clf()
+    fig,ax=plt.subplots(num=5)
+    
+    # these really don't compare that well.
+    # weights seem okay.
+    # first data point:
+    #  speed[0] = 2.57219
+    #  u[0]=-2.53  v[0]=-0.447
+    # so that's blowing *to* the WSW
+    # arctan2 gives 190, so that's compass direction
+    # 260, and switch to wind convention, that should be
+    # a wind direction of 80.
+    # these match up with the netcdf for HWD, and for the CSV.
+    wind_ds=load_obs_wind(2016)
+    stn=38
+    ds_u=wind_ds.u10.isel(station=stn).values
+    ds_v=wind_ds.v10.isel(station=stn).values
+    ds_speed=np.sqrt(ds_u**2 + ds_v**2)
+
+    if 0: # plot speed
+        ax.plot(t_psts,speed,label='local')
+        ax.plot(wnd.ts_pst, wnd.spd,label='orig')
+        ax.plot(wind_ds.time, ds_speed,label='Netcdf HWD')
+    else:
+        ax.plot(t_psts,u,label='local u')
+        ax.plot(t_psts,v,label='local v')
+        ax.plot(wind_ds.time, ds_u,label='Netcdf HWD u')
+        ax.plot(wind_ds.time, ds_v,label='Netcdf HWD v')
+        
+        sfei_ts_pst=sfei_wnd.ts_pst
+        time_sel=((sfei_ts_pst>=np.datetime64("2016-01-01"))
+                 & (sfei_ts_pst<np.datetime64("2016-04-01")))
+        site_idx=sfei_wnd.sites.index('ASOS-HWD')
+        sfei_u=sfei_wnd.U[time_sel,site_idx]
+        sfei_v=sfei_wnd.V[time_sel,site_idx]
+        sfei_time=sfei_ts_pst[time_sel]
+        ax.plot(sfei_time,sfei_u,label='SFEI Wind u')
+        ax.plot(sfei_time,sfei_v,label='SFEI Wind v')
+        
+    ax.legend(loc='upper left')
+    
+
+#%%
 def get_global_ts(time_pst,source_time,source_value):
     result = np.full(len(time_pst),np.nan)
     _,iA,iB = np.intersect1d(time_pst,source_time,return_indices=True)
@@ -325,218 +545,124 @@ for site in sites:
     rawdf['tdvel'] = get_tide_velocity(site=site,utm=utm,time_pst=rawdf.ts_pst)
     rawdf['wl'] = get_tide_elevation(site=site,utm=utm,time_pst=rawdf.ts_pst)
     rawdf['storm'] = get_trib_flow(site=site,utm=utm,time_pst=rawdf.ts_pst)
-    rawdf['delta'] = get_delta_flow(site=site,utm=utm,time_pst=rawdf.ts_pst)    
-        
+    rawdf['delta'] = get_delta_flow(site=site,utm=utm,time_pst=rawdf.ts_pst) 
+
+    h,u = get_local_tides( site=site,utm=utm,time_pst=rawdf.ts_pst)
+    rawdf['h_tide_local']= h
+    rawdf['u_tide_local']= u
+    
+    wind_u,wind_v=get_local_wind(site=site,utm=utm,time_pst=rawdf.ts_pst)
+    rawdf['wind_u_local']=wind_u
+    rawdf['wind_v_local']=wind_v    
+    wind_speed=np.sqrt(wind_u**2 + wind_v**2)
+    rawdf['wind_spd_local']=wind_speed
+
+    # and a boxcar from -4 hours to current sample, with TLC at the
+    # start of the sequence and make sure it's the preceding samples,
+    # not centered.
+    def antecedent(x,winsize=5):
+        y=filters.lowpass_fir(x,winsize,window='boxcar',
+                              mode='full')[:-(winsize-1)]
+        assert len(y)==len(x)
+        return y
+    rawdf['wind_u_4h_local']=antecedent(wind_u)
+    rawdf['wind_v_4h_local']=antecedent(wind_v)
+    # for resuspension, I think it's a bit better to average speed than
+    # velocity.
+    rawdf['wind_spd_4h_local']=antecedent(wind_speed)
+
+    
     rawdfs.append(rawdf)
     station_dfs[site] = rawdf
-    
-station_df=pd.concat(rawdfs)
-
-# A bunch of those covariates we don't have long time series for...
-# looks like wind, tdvel, wl, nd delta outflow all have about the 
-# same number of entries. storm has about double those.
-
+   
 #%%
 
-# Trim out missing SSC or covariate data
-missing=( station_df['ssc_mgL'].isnull()
-         | station_df['usgs_lf'].isnull()
-         | station_df['wind'].isnull()
-         | station_df['tdvel'].isnull()
-         | station_df['storm'].isnull()
-         | station_df['delta'].isnull() )
-
-station_df_notnull=station_df[~missing]
-
-# For starters all covariates handled at the station level, so already
-# filled in.
-# Write to global csv, ready for mgcv.
+if 0: 
+    # Verification of tidal harmonic water level between DCR code,
+    # model harmonics, and NOAA Redwood
+    from stompy.io.local import noaa_coops
+    noaa_ds=noaa_coops.coops_dataset(9414523,
+                                     start_date=np.datetime64("2014-01-01"),
+                                     end_date  =np.datetime64("2014-06-01"),
+                                     products=['water_level'],days_per_request='M',
+                                     cache_dir='.')
+    # Check for timezone issues between new harmonics and old
+    # For stage easy to corroborate with NOAA
+    # Looks like there is probably a 1 hour error in the original WL data,
+    # which came from Redwood City.
+    # Model is about 20 minutes early. 
+    
+    fig=plt.figure(2)
+    fig.set_size_inches([6,4],forward=True)
+    fig.clf()
+    rawdf=station_dfs['San_Mateo_Bridge']
+    
+    # What does the model think about Redwood City?
+    h_rw,u_rw = get_local_tides(site='Redwood City',utm=[569502., 4151450.],
+                                time_pst=rawdf.ts_pst)
+    
+    # account for 1 hr error in original data:
+    plt.plot(rawdf.ts_pst+np.timedelta64(1,'h'),
+             rawdf.wl,label='wl orig')
+    plt.plot(rawdf.ts_pst,rawdf.h_tide_local,label='wl local harm.')
+    plt.plot(rawdf.ts_pst,
+             h_rw,label='Redwood wl local harm.')
+    plt.plot(noaa_ds.time - np.timedelta64(7,'h'), noaa_ds.water_level.isel(station=0),
+             label='NOAA Redwood')
+    
+    plt.legend()
+    plt.axis((16082.308550534273, 16083.723863767034, -0.866859496789758, 3.1840823906537725))
+    fig.autofmt_xdate()
+    fig.savefig(os.path.join(dir_gamfigs,'waterlevel-compare.png'))
+    
+if 0:
+    # Same, but for velocity
+    fig=plt.figure(3)
+    fig.set_size_inches([6,4],forward=True)
+    fig.clf()
+    rawdf=station_dfs['San_Mateo_Bridge']
+    
+    plt.plot(rawdf.ts_pst + np.timedelta64(1,'h'),
+             rawdf.tdvel,label='tdvel orig')
+    plt.plot(rawdf.ts_pst,rawdf.u_tide_local,label='u local harm.')
+    
+    plt.legend()
+    plt.axis((16081.564648308466, 16084.065940314722, -1.2748613223051328, 1.355745929983363))
+    fig.autofmt_xdate()
+    fig.savefig(os.path.join(dir_gamfigs,'tdvel-compare.png'))
+    
+#%%
 
 dest_dir="../DataFit00"
 if not os.path.exists(dest_dir):
     os.makedirs(dest_dir)
-station_df_notnull.to_csv(os.path.join(dest_dir,"model-inputs.csv"))
-    
 
-## DR code below
-# %% Loop over sites, build input data structure, build a model
-
-
-## 
-data = DotMap()
-
-for site in sites:
+if 0: # write a giant master csv
+    station_df=pd.concat(rawdfs)
+    # A bunch of those covariates we don't have long time series for...
+    # looks like wind, tdvel, wl, nd delta outflow all have about the 
+    # same number of entries. storm has about double those.
     
-    ###### Build the corresponding cruise time-series for the predictions ##### 
+    # Trim out missing SSC or covariate data
+    missing=( station_df['ssc_mgL'].isnull()
+             | station_df['usgs_lf'].isnull()
+             | station_df['wind'].isnull()
+             | station_df['tdvel'].isnull()
+             | station_df['storm'].isnull()
+             | station_df['delta'].isnull() )
     
-    iSite = matchref['Site'] == site
-    matchsites = tuple(map(int,str(matchref['CruiseStations'][iSite].values[0]).split(',')))
+    station_df_notnull=station_df[~missing]
     
-    # start with an overshoot time-series; so we can mesh with both the model fit and with the prediction data
-    cruiseset_ts = np.arange(np.datetime64('1990-01-01'),OutputEnd+np.timedelta64(100,'D'),np.timedelta64(OutputTimeStep,'h'))
-    cruiseset = np.ones((len(cruiseset_ts),len(matchsites)))*np.nan
-    cruiseset_kd = np.ones((len(cruiseset_ts),len(matchsites)))*np.nan
-
-    j = 0
-    for n in matchsites: # loop over cruise sites associated with this SSC site
-        ts_cruise = pd.Series(cruise[n].ts_pst).dt.round(str(OutputTimeStep)+'h').to_numpy()
-        _,iA,iB = np.intersect1d(cruiseset_ts,ts_cruise,return_indices=True)
-        cruiseset[iA,j] = cruise[n].ssc_mgL[iB] # array of cruise SSC data
-        cruiseset_kd[iA,j] = cruise[n].Kd[iB] # array of cruise Kd data
-        j = j+1
-    cruise_ssc = np.nanmean(cruiseset,axis=1) # collapse cruise_ssc data into site-averages
-    iCruise = ~np.isnan(cruise_ssc) # where there is cruise data
-    cruise_filled = np.interp(date2num(cruiseset_ts),date2num(cruiseset_ts[iCruise]),cruise_ssc[iCruise]) # interpolate time-series of cruise data
-    CruiseSet_SSC = pd.Series(cruise_filled).rolling(window=lfwin,center=True).mean().to_numpy() # smooth it in time - THIS IS THE LONG-TERM TREND forcing data
+    # This file is enormous, and unnecessary unless we fit a global model
+    station_df_notnull.to_csv(os.path.join(dest_dir,"model-inputs.csv"))
     
-    ############################################################################
+for site in station_dfs:
+    df=station_dfs[site]
+    valid=df['ssc_mgL'].notnull().values
+    for required in ['usgs_lf','wind','tdvel','storm','delta']:
+        valid=valid & df[required].notnull()
+    print(f"Site {site}: {valid.sum()} / {len(valid)}  ({100*valid.sum()/len(valid):.1f}%) valid")
+    df_valid=df[valid]
+    df_valid.to_csv(os.path.join(dest_dir,f'model-inputs-valid-{site}.csv'))
+    df.to_csv(os.path.join(dest_dir,f'model-inputs-{site}.csv'))
     
-    ########### Handle the observed SSC data ###################################
-    rawdf = pd.read_csv(os.path.join(dir_sscdata,site+'Processed_15min.csv'))
-    rawdf['ts_pst'] = pd.to_datetime(rawdf['ts_pst'])
-    
-    # Smooth it as needed to the output time step
-    raw = DotMap()
-    raw.ts_pst = rawdf['ts_pst'].to_numpy()
-    raw.ssc = rawdf['ssc_mgL'].to_numpy()
-    raw.ssc_orig = rawdf['ssc_mgL'].to_numpy()
-    step = raw.ts_pst[1] - raw.ts_pst[0]
-    window = int(np.timedelta64(OutputTimeStep,'h')/step)
-    if window > 1: # smooth the data if output step is greater than input time series step
-        raw.ssc = pd.Series(raw.ssc).rolling(window=window,min_periods=1,center=True).mean().to_numpy()
-        
-    # Get the first and last dt values at the output step resolution  
-    RoundTime = rawdf['ts_pst'].dt.round(str(OutputTimeStep)+'h')
-    start = RoundTime.to_numpy()[0]
-    end = RoundTime.to_numpy()[-1]
-    
-    # Build input SSC at output step resolution for modeling
-    data[site].ts_pst = np.arange(start,end+np.timedelta64(OutputTimeStep,'h'),np.timedelta64(OutputTimeStep,'h'))
-    _,iA,iB = np.intersect1d(data[site].ts_pst,raw.ts_pst,return_indices=True)
-    data[site].ssc = np.ones(len(data[site].ts_pst))*np.nan
-    data[site].ssc[iA] = raw.ssc[iB] 
-    
-    ############################################################################
-
-    ##### Mesh in the  forcing time-series #####################################
-    
-    # Wind
-    data[site].wnd = np.ones(len(data[site].ts_pst))*np.nan
-    _,iA,iB = np.intersect1d(data[site].ts_pst,wnd.ts_pst,return_indices=True)
-    data[site].wnd[iA] = wnd.spd[iB]
-    
-    # tidal velocity
-    data[site].tdvel = np.ones(len(data[site].ts_pst))*np.nan
-    _,iA,iB = np.intersect1d(data[site].ts_pst,tdvel.ts_pst,return_indices=True)
-    data[site].tdvel[iA] = tdvel.u_ms[iB]
-    
-    # Tidal water level
-    data[site].wl = np.ones(len(data[site].ts_pst))*np.nan
-    _,iA,iB = np.intersect1d(data[site].ts_pst,wtrlvl.ts_pst,return_indices=True)
-    data[site].wl[iA] = wtrlvl.wl[iB]
-    
-    # Alameda Inflow (local inflow effects)
-    data[site].localq = np.ones(len(data[site].ts_pst))*np.nan
-    _,iA,iB = np.intersect1d(data[site].ts_pst,alamedaq.ts_pst,return_indices=True)
-    data[site].localq[iA] = alamedaq.q_cms[iB]
-    
-    # Delta inflow (seasonal/controlled inflows)
-    data[site].deltaq = np.ones(len(data[site].ts_pst))*np.nan
-    _,iA,iB = np.intersect1d(data[site].ts_pst,deltaq.ts_pst,return_indices=True)
-    data[site].deltaq[iA] = deltaq.q_cms[iB]
-    
-    # Cruise signal (seasonal variability, smoothed discrete samples)
-    data[site].cruise_ssc = np.ones(len(data[site].ts_pst))*np.nan
-    _,iA,iB = np.intersect1d(data[site].ts_pst,cruiseset_ts,return_indices=True)
-    data[site].cruise_ssc[iA] = CruiseSet_SSC[iB]
-    
-    ############################################################################
-    
-    ################ Fit a model ###############################################
-    # 0 - wind, 1 - tidal vel, 2 - water level, 3 - alameda flow, 4 - delta flow, 5 - cruise ssc
-    # map short variable names to plottable pretty names
-    var_labels={'wnd_speed':'Wind Speed',
-                'u_tide':'Tidal Velocity (flood+)',
-                'h_tide':'Tidal Elevation',
-                'Qalameda':'Alameda Flow',
-                'Qdelta':'Delta Flow',
-                'localTrend':'Local Seasonal Cruise SSC'
-                }
-    
-    predictors = ['wnd_speed','u_tide','h_tide','Qalameda','Qdelta','localTrend']
-
-    # Stuff all this into a per-site dataframe
-    df=data[site]
-    #pd.DataFrame()
-    #df['wnd_speed']=data[site].wnd
-    #df['u_tide'] = data[site].tdvel
-
-    
-    X = np.vstack( (data[site].wnd, data[site].tdvel, data[site].wl,
-                    data[site].localq, data[site].deltaq, data[site].cruise_ssc )).T
-    Y = data[site].ssc
-    iXgood = ~np.isnan(X).any(axis=1)
-    iYgood = (~np.isnan(Y))
-    iGood =  iXgood & iYgood
-    xGood = X[iGood,:]
-    yGood = Y[iGood]
-    
-    # Train on the first 80% of the data, test on last 20%
-    # Don't use train_test_split, since it randomly chooses and 
-    # with autocorrelation that's not a fair test.
-
-    
-        
-    #    xTrain, xTest, yTrain, yTest = train_test_split(X,Y,train_size=0.8)
-    #    gam = LinearGAM().fit(xTrain,yTrain)
-    #    gam = LinearGAM(s(0,n_splines=10)+s(1,n_splines=10)+s(2,n_splines=10)+s(3,n_splines=10)+s(4,n_splines=10)+s(5,n_splines=10)).fit(Xtrain,Ytrain)
-    gam = LinearGAM(s(0)+s(1)+s(2)+s(3)+s(4)+s(5),n_splines=10).fit(xGood,yGood)
-    #    gam = LinearGAM(s(0)+s(1)+s(2)+s(3)+s(4)).fit(X,Y)
-    
-    data[site].gam_ssc = np.ones(len(data[site].ts_pst))*np.nan
-    data[site].gam_ssc[iXgood] = gam.predict(X[iXgood])
-    
-    # Plot GAM fits
-    fig, axs = plt.subplots(1,len(predictors),figsize=(14,3.5));
-
-    for i, ax in enumerate(axs):
-        XX = gam.generate_X_grid(term=i)
-        ax.plot(XX[:, i], gam.partial_dependence(term=i, X=XX))
-        ax.plot(XX[:, i], gam.partial_dependence(term=i, X=XX, width=.95)[1], c='r', ls='--')
-        if i == 0:
-            ax.set_ylim(-30,30)
-        ax.set_title(var_labels[predictors[i]],fontsize=9)
-    axs[0].set_ylabel('SSC (mg/L)')
-    fig.text(0.04, 0.5,site, va='center', rotation='vertical',fontsize=12)
-    # fig.savefig(os.path.join(dir_gamfigs,site+'_gam_fits.png')) 
-    
-    break
-
-#%%
-
-# Make sure the dataframe closely matches data[site] before ditching
-# all look good.
-# had to futz with filtering of ssc from 15 minute to an hour,
-# and avoid too much extrapolation for cruise data.
-
-site='Alcatraz_Island'
-
-for i,(data_var,df_var) in enumerate( [
-        ('cruise_ssc','usgs_lf'),
-        #('ssc','ssc_mgL'),
-        #('localq','storm'),
-        #('tdvel','tdvel'),
-        #('wl','wl'),
-        #('wnd','wind')
-        ]):    
-    plt.figure(100+i).clf()
-    plt.plot(station_dfs[site].ts_pst,
-             station_dfs[site][df_var],
-             label=f'{df_var} data frame')
-    plt.plot(data[site].ts_pst,
-             data[site][data_var],
-             label=f'{data_var} dotmap')
-    if data_var=='ssc':
-        plt.plot(raw.ts_pst,raw.ssc_orig,label='raw 15 min')
-        plt.plot(raw.ts_pst,raw.ssc,label='15 min with rolling')
-    plt.legend(loc='upper right')
