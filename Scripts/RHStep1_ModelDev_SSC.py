@@ -271,6 +271,13 @@ harmonics = xr.open_dataset("../Data_HydroHarmonics/harmonics-wy2013.nc")
 grid_harmonics=unstructured_grid.UnstructuredGrid.read_ugrid(harmonics)
 
 def get_local_tides(site, utm, time_pst):
+    if site=='Mare_Island_Causeway':
+        # default location pulls from intertidal area, and model is crap
+        # up on Napa due to some bad bathy.
+        print(f"Local tides special case for {site}")
+        print("  Will pull tides from Carquinez Strait")
+        utm=[566407., 4213095]
+    
     c=grid_harmonics.select_cells_nearest(utm)
     cc=grid_harmonics.cells_center()
     dist = utils.dist(cc[c],utm)
@@ -305,6 +312,8 @@ def get_local_tides(site, utm, time_pst):
     v_pred=harm_decomp.recompose(t_utc,v_comps.values, omegas)
     u_flood_pred=u_pred*np.cos(theta) + v_pred*np.sin(theta) 
 
+    if np.any(np.isnan(h_pred)):
+        breakpoint()
     return h_pred,u_flood_pred
 
 #%%
