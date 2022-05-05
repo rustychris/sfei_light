@@ -594,7 +594,7 @@ if 0:
                                      start_date=np.datetime64("2014-01-01"),
                                      end_date  =np.datetime64("2014-06-01"),
                                      products=['water_level'],days_per_request='M',
-                                     cache_dir='.')
+                                     cache_dir='cache')
     # Check for timezone issues between new harmonics and old
     # For stage easy to corroborate with NOAA
     # Looks like there is probably a 1 hour error in the original WL data,

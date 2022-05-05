@@ -9,6 +9,8 @@ Test skill of original python-based GAM
 import pandas as pd
 import os
 import numpy as np
+import seaborn as sns
+
 import matplotlib.pyplot as plt
 from stompy import utils, filters, memoize
 
@@ -29,10 +31,49 @@ if not os.path.exists(dir_gamfigs):
     
 #%%
 
+# helper method to fabricate a derived predictors
+def antecedent(x,winsize):
+    if winsize==1: return x
+    return filters.lowpass_fir(x,winsize,nan_weight_threshold=0.01,
+                               window='boxcar',mode='full')[:-(winsize-1)]
+
+def envelope(x,rise_win=1.0,decay_win=1.0):
+    """
+    akin to envelope follower.
+    Decay response to x. Exponential filter with distinct rates 
+    for rise vs. decay.
+    Missing data reverts to mean.
+    """
+    mean=np.nanmean(x)
+    x=np.where(np.isnan(x),mean,x)
+    
+    result=np.zeros(len(x),np.float64)
+    y=result[0]=x[0]
+    for i in range(1,len(result)):
+        delta=x[i]-y
+        # if delta is positive, y rises to input over rise_win samples
+        # if delta is negative, y falls to input over decay_win samples
+        y += (1./rise_win)*delta.clip(0,np.inf) + (1./decay_win)*delta.clip(-np.inf,0)
+        result[i] = y
+    return result
+        
+
 @memoize.memoize(lru=2)
 def src_data(site):
     src = pd.read_csv(os.path.join(data_dir,f"model-inputs-{site}.csv"),
                       parse_dates=['ts_pst'])
+    
+    # spring-neap indicator:
+    src['u_rms']=np.sqrt( filters.lowpass_fir(src['u_tide_local']**2,60) )
+    src['year'] = src.ts_pst.dt.year - 2000
+    src['doy'] = src.ts_pst.dt.dayofyear
+    src['tide_hour'] = utils.hour_tide(utils.to_dnum(src.ts_pst.values),
+                                       u=src['u_tide_local'])
+    src['wind_spd_ante']=antecedent(src['wind_spd_local'],30)
+    src['wind_u_ante']=antecedent(src['wind_u_local'],30)
+    src['wind_v_ante']=antecedent(src['wind_v_local'],30)
+    
+    
     return src
 
 #%%
@@ -52,11 +93,6 @@ if 0:# testing
     
 #%%
 
-# helper methods to fabricate a derived predictors
-def antecedent(x,winsize):
-    if winsize==1: return x
-    return filters.lowpass_fir(x,winsize,nan_weight_threshold=0.01,
-                               window='boxcar',mode='full')[:-(winsize-1)]
 
 def rmse(a,b):
     return np.sqrt(np.mean( (a-b)**2))
@@ -180,18 +216,9 @@ sites = ['Alcatraz_Island','Alviso_Slough','Benicia_Bridge','Carquinez_Bridge','
 
 recs=[]
 
-for site in sites:
+for site in ['Dumbarton_Bridge']: # sites:
     print(f"Site: {site}")
     src=src_data(site)
-    
-    # spring-neap indicator:
-    src['u_rms']=np.sqrt( filters.lowpass_fir(src['u_tide_local']**2,60) )
-    src['year'] = src.ts_pst.dt.year - 2000
-    src['doy'] = src.ts_pst.dt.dayofyear
-    src['tide_hour'] = utils.hour_tide(utils.to_dnum(src.ts_pst.values),
-                                       u=src['u_tide_local'])
-    src['wind_spd_ante']=antecedent(src['wind_spd_local'],30)
-    
     
     predictors=["s(wind) + s(tdvel) + s(wl) + s(storm) + s(delta) + s(usgs_lf)",
                 
@@ -208,7 +235,59 @@ for site in sites:
                  "  + s(delta) + s(usgs_lf) + s(tide_hour) + s(u_rms) + s(doy)")
                 ]
                 
-                
+    predictors=[
+        # 42.4 / 110
+        #"s(wind) + s(tdvel) + s(wl) + s(storm) + s(delta) + s(usgs_lf)",
+        # 47 / 74
+        # "s(wind) + s(tdvel) + s(wl) + s(storm) + s(delta)",
+
+        # 45, 74
+        #"s(wind_spd_ante) + s(tdvel) + s(wl) + s(storm) + s(delta)",
+        
+        # 45, 74
+        # "s(wind_spd_ante) + s(u_tide_local) + s(wl) + s(delta)",
+
+        # te(usgs_lf,tide_hour) was not good        
+        
+        # 44 / 73
+        #"s(wind_spd_ante) + s(u_tide_local) + s(wl) + s(delta) + s(u_rms)",
+
+        # 44/71
+        #"te(wind_spd_ante,tide_hour) + s(u_tide_local) + s(wl) + s(delta) + s(u_rms)",
+
+        # 44/71
+        #"s(wind_spd_ante) + s(u_tide_local) + s(wl) + s(delta) + te(u_rms,tide_hour)",
+
+        # 43, 69
+        #"s(wind_u_ante) + s(wind_v_ante) + s(u_tide_local) + s(wl) + s(delta) + te(u_rms,tide_hour)",
+
+        # 44, 69
+        # "s(wind_u_ante) + s(wind_v_ante) + s(u_tide_local) + s(delta) + te(u_rms,tide_hour)",
+
+        # 44, 70
+        #"s(wind_u_ante) + s(wind_v_ante) + s(delta) + te(u_rms,tide_hour)",
+
+        # 44, 75
+        #"s(wind_u_ante) + s(wind_v_ante) + te(u_rms,tide_hour)",
+        
+        # 44, 70
+        #"s(wind_u_ante) + s(delta) + te(u_rms,tide_hour)",
+
+        # 49, 68 
+        #"s(delta) + te(u_rms,tide_hour)",
+        
+        # 49, 68
+        # "te(delta,tide_hour) + te(u_rms,tide_hour)",       
+        
+        # 49, 67
+        # "s(delta_ante) + te(u_rms,tide_hour)",
+        
+        # 44, 70
+        "te(wind_u_ante, wind_v_ante) + s(delta) + te(u_rms,tide_hour)",
+        ]
+
+    #src['delta_ante']= envelope(src['delta'],24,320)
+    
     for predictor in predictors: 
         rec=dict(site=site)
         recs.append(rec)
@@ -317,33 +396,31 @@ for site in sites:
 all_fits=pd.DataFrame(recs)
 
 #%%
+if 0:
+    plt.figure(20).clf()
+    fig,ax=plt.subplots(num=20)
+    
+    sns.barplot(x='site', y='rmse_test',  data=all_fits, hue='predictor', ci=None)
+    plt.setp(ax.get_xticklabels(),rotation=90)
+    fig.subplots_adjust(bottom=0.5,top=0.98,right=0.97)
+    ax.legend(loc='upper left',bbox_to_anchor=[-0.15,-0.65],fontsize=7.5)
+    
+    #fig.savefig(os.path.join(dir_gamfigs,'ssc-compare-formulas-rmse.png'),dpi=200)
 
-import seaborn as sns
-
-plt.figure(20).clf()
-fig,ax=plt.subplots(num=20)
-
-sns.barplot(x='site', y='rmse_test',  data=all_fits, hue='predictor', ci=None)
-plt.setp(ax.get_xticklabels(),rotation=90)
-fig.subplots_adjust(bottom=0.5,top=0.98,right=0.97)
-ax.legend(loc='upper left',bbox_to_anchor=[-0.15,-0.65],fontsize=7.5)
-
-fig.savefig(os.path.join(dir_gamfigs,'ssc-compare-formulas-rmse.png'),dpi=200)
-
-
-plt.figure(21).clf()
-fig,ax=plt.subplots(num=21)
-all_fits['testR2']=all_fits['testR']**2 * np.sign(all_fits['testR'])
-sns.barplot(x='site', y='testR2',  data=all_fits, hue='predictor', ci=None)
-plt.setp(ax.get_xticklabels(),rotation=90)
-fig.subplots_adjust(bottom=0.5,top=0.98,right=0.97)
-ax.legend(loc='upper left',bbox_to_anchor=[-0.15,-0.65],fontsize=7.5)
-
-fig.savefig(os.path.join(dir_gamfigs,'ssc-compare-formulas-testR.png'),dpi=200)
+    plt.figure(21).clf()
+    fig,ax=plt.subplots(num=21)
+    all_fits['testR2']=all_fits['testR']**2 * np.sign(all_fits['testR'])
+    sns.barplot(x='site', y='testR2',  data=all_fits, hue='predictor', ci=None)
+    plt.setp(ax.get_xticklabels(),rotation=90)
+    fig.subplots_adjust(bottom=0.5,top=0.98,right=0.97)
+    ax.legend(loc='upper left',bbox_to_anchor=[-0.15,-0.65],fontsize=7.5)
+    
+    #fig.savefig(os.path.join(dir_gamfigs,'ssc-compare-formulas-testR.png'),dpi=200)
 
 
 #%%
 # Things to try
+#  - focus on Dumbarton, what drives the data?
 #  - antecedent wind vector
 #  - focus on low SSC data points.  maybe inverse? or fit to 4.5/Kd?
 #  - antecedent tidal velocity, maybe squared or cubed.
@@ -363,6 +440,8 @@ for plot_var,ax in zip(plot_vars,axs):
 
 axs[0].plot(t_train,pred_train)
 axs[0].plot(t_test,pred_test)
+axs[6].plot(src['ts_pst'].values,
+            src['delta_ante'].values)
 
  
 # Wind-events seem to have an effect that can last for some days
