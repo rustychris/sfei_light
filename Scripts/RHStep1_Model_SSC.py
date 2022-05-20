@@ -249,8 +249,9 @@ def utm_to_aa(utm,chan_geom=chan_geom):
     across=((utm-on_axis)*norm).sum(axis=1)
     return np.c_[alongs,across]
 #%%    
-from stompy.grid import unstructured_grid
-g=unstructured_grid.UnstructuredGrid.read_dfm("../Grid/wy2013c_waqgeom.nc",cleanup=True)
+import gam_common
+g=gam_common.grid()
+
 #%%
 ## 
 # Compile all of the observed SSC into a global dataframe that can then
