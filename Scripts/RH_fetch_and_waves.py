@@ -210,7 +210,7 @@ def fetch_limited_waves(utm,g,wind_u,wind_v,eta=0.0,degree_res=2,degree_smooth=3
         H[limit] = 0.55*mean_h[limit]
         T[limit]=(Tstar_limit * U10[limit]/grav)
     else:
-        print("No heights limited")
+        pass # print("No heights limited")
     
     df['h']=h
     df['mean_h']=mean_h    

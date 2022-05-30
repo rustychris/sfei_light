@@ -306,7 +306,7 @@ def get_local_tides(site, utm, time_pst):
     print(f"Site {site}: principal flood direction {(90-180*theta/np.pi)%360:.1f} degTrue")
     
     # I think the model runs in UTC, so harmonics are referenced to UTC
-    t_utc = (time_pst + np.timedelta64(7,'h') - harmonics.t_ref.values) / np.timedelta64(1,'s')
+    t_utc = (time_pst + np.timedelta64(8,'h') - harmonics.t_ref.values) / np.timedelta64(1,'s')
     h_pred=harm_decomp.recompose(t_utc,h_comps.values, omegas)
     u_pred=harm_decomp.recompose(t_utc,u_comps.values, omegas)
     v_pred=harm_decomp.recompose(t_utc,v_comps.values, omegas)
@@ -616,7 +616,7 @@ if 0:
     plt.plot(rawdf.ts_pst,rawdf.h_tide_local,label='wl local harm.')
     plt.plot(rawdf.ts_pst,
              h_rw,label='Redwood wl local harm.')
-    plt.plot(noaa_ds.time - np.timedelta64(7,'h'), noaa_ds.water_level.isel(station=0),
+    plt.plot(noaa_ds.time - np.timedelta64(8,'h'), noaa_ds.water_level.isel(station=0),
              label='NOAA Redwood')
     
     plt.legend()

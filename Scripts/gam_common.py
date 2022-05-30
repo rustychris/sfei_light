@@ -7,7 +7,7 @@ Created on Fri May  6 04:50:09 2022
 from stompy import filters
 import numpy as np
 import scipy as sp
-from pygam import LinearGAM, s, l, te, f, penalties
+from pygam import LinearGAM, s, l, te, f, penalties, intercept
 
 data_dir="../DataFit00"
 
