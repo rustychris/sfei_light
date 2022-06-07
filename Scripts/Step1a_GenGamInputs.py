@@ -34,26 +34,17 @@ import pickle
 
 from stompy import utils
 from stompy import filters
-import seaborn as sns
 from dotmap import DotMap
 from stompy.spatial import interp_nn
-import statsmodels.formula.api as smf
+from stompy.grid import unstructured_grid
+import utm_to_aa
 
-from pygam import LinearGAM, s, l, te
-from sklearn.linear_model import LinearRegression
-from math import e
+#%%
 
 # Analysis sites
 # Note that Golden Gate Bridge does not have recent enough data (2000 forward) to overlap with the predictor data set (2000-2020)
-sites = ['Alcatraz_Island','Alviso_Slough','Benicia_Bridge','Carquinez_Bridge','Channel_Marker_01',
-         'Channel_Marker_09','Channel_Marker_17','Corte_Madera_Creek','Dumbarton_Bridge',
-         'Mallard_Island','Mare_Island_Causeway','Point_San_Pablo','Richmond_Bridge','San_Mateo_Bridge']
-
-OutputTimeStep = 1 # hours, must be at least 1 hour and no more than 24 hours
-
-# Output date range; these dates (WYs 2010-2018) because forcing data are complete over this interval
-OutputStart = np.datetime64('2009-10-01') # output start date
-OutputEnd = np.datetime64('2018-10-01') # output end data
+import gam_common
+from gam_common import (sites,OutputTimeStep,OutputStart,OutputEnd)
 
 LowFreqWindow = 90 # days, for smoothing cruise ssc data to get a seasonal trend signal
 lfwin = int(np.timedelta64(LowFreqWindow,'D')/np.timedelta64(OutputTimeStep,'h'))
@@ -196,8 +187,7 @@ def cruise_ssc_at_stations(stations,times):
                              times.max() + pad,
                              dt64)
     cruiseset = np.ones((len(cruiseset_ts),len(stations)))*np.nan
-    cruiseset_kd = np.ones((len(cruiseset_ts),len(stations)))*np.nan
-
+    
     for j,n in enumerate(stations): # loop over cruise sites associated with this SSC site
         # times of the cruise data for a specific cruise station
         ts_cruise = pd.Series(cruise[n].ts_pst).dt.round(str(OutputTimeStep)+'h').to_numpy()
@@ -225,12 +215,10 @@ def cruise_ssc_at_stations(stations,times):
 
 #%%
 
-from stompy.grid import unstructured_grid
 g=unstructured_grid.UnstructuredGrid.read_dfm("../Grid/wy2013c_waqgeom.nc",cleanup=True)
 
 #%%
 
-import utm_to_aa
 
 # Compile all of the observed SSC into a global dataframe that can then
 # be annotated with more local data.
@@ -504,11 +492,10 @@ for site in sites:
     # velocity.
     rawdf['wind_spd_4h_local']=antecedent(wind_speed)
 
-    
     rawdfs.append(rawdf)
     station_dfs[site] = rawdf
    
-dest_dir="../DataFit00"
+dest_dir=gam_common.data_dir
 if not os.path.exists(dest_dir):
     os.makedirs(dest_dir)
 

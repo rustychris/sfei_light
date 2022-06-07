@@ -11,6 +11,16 @@ from pygam import LinearGAM, s, l, te, f, penalties, intercept
 
 data_dir="../DataFit00"
 
+sites = ['Alcatraz_Island','Alviso_Slough','Benicia_Bridge','Carquinez_Bridge','Channel_Marker_01',
+         'Channel_Marker_09','Channel_Marker_17','Corte_Madera_Creek','Dumbarton_Bridge',
+         'Mallard_Island','Mare_Island_Causeway','Point_San_Pablo','Richmond_Bridge','San_Mateo_Bridge']
+
+OutputTimeStep = 1 # hours, must be at least 1 hour and no more than 24 hours
+# Output date range; these dates (WYs 2010-2018) because forcing data are complete over this interval
+OutputStart = np.datetime64('2009-10-01') # output start date
+OutputEnd = np.datetime64('2018-10-01') # output end data
+
+
 def grid():
     from stompy.grid import unstructured_grid
     return unstructured_grid.UnstructuredGrid.read_dfm("../Grid/wy2013c_waqgeom.nc",cleanup=True)
