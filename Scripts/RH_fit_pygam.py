@@ -16,7 +16,7 @@ from stompy import utils, filters, memoize
 
 from pygam import LinearGAM, s, l, te
 from sklearn.linear_model import LinearRegression
-import RH_fetch_and_waves as waves
+import fetch_and_waves as waves
 import pickle
 
 #%%

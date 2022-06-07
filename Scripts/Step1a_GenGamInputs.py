@@ -35,7 +35,7 @@ import pickle
 from stompy import utils
 from stompy import filters
 from dotmap import DotMap
-from stompy.spatial import interp_nn
+from stompy.spatial import interp_nn, proj_utils
 from stompy.grid import unstructured_grid
 import utm_to_aa
 
@@ -309,11 +309,13 @@ def get_local_tides(site, utm, time_pst):
 # with something that approximates natural neighbor interpolation
 # to remain consistent with Allie's fields.
 
-from stompy.spatial import proj_utils
 
 # prepare inputs:
-wind_data_dir="../Data_Forcing/WindAK"
+#wind_data_dir="../Data_Forcing/WindAK"
+wind_data_dir="/richmondvol1/google/SFEI_Wind"
 wind_obs_dir=os.path.join(wind_data_dir,"Compiled_Hourly_10m_Winds","data")
+
+assert os.path.exists(wind_obs_dir),f"Update compiled wind data path in {__file__}"
 
 def load_obs_wind(year):
     fn=os.path.join(wind_obs_dir,f"SFB_hourly_wind_and_met_data_{year}.nc")
@@ -502,7 +504,7 @@ if not os.path.exists(dest_dir):
 for site in station_dfs:
     df=station_dfs[site]
     valid=df['ssc_mgL'].notnull().values
-    for required in ['usgs_lf','wind','tdvel','storm','delta']:
+    for required in ['wind_u_local','tdvel','storm','delta']:
         valid=valid & df[required].notnull()
     print(f"Site {site}: {valid.sum()} / {len(valid)}  ({100*valid.sum()/len(valid):.1f}%) valid")
     #df_valid=df[valid]
