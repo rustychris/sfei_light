@@ -45,9 +45,6 @@ from math import e
 
 # Analysis sites
 # Note that Golden Gate Bridge does not have recent enough data (2000 forward) to overlap with the predictor data set (2000-2020)
-#sites = ['Mallard_Island','Mare_Island_Causeway','Point_San_Pablo','Richmond_Bridge',
-#         'Dumbarton_Bridge','San_Mateo_Bridge']
-
 sites = ['Alcatraz_Island','Alviso_Slough','Benicia_Bridge','Carquinez_Bridge','Channel_Marker_01',
          'Channel_Marker_09','Channel_Marker_17','Corte_Madera_Creek','Dumbarton_Bridge',
          'Mallard_Island','Mare_Island_Causeway','Point_San_Pablo','Richmond_Bridge','San_Mateo_Bridge']
@@ -411,79 +408,6 @@ def get_local_wind(site,utm,time_pst):
     v_final=np.concatenate(v_years)
     return u_final, v_final
 
-# DEV for NN code  
-#plt.figure(4).clf() 
-#fig,ax=plt.subplots(num=4)
-#g.plot_edges(color='k',lw=0.4)
-#ax.plot( wind_ds.x_utm, wind_ds.y_utm,'ro')
-#ax.plot( [utm[0]], [utm[1]], 'bo')
-#voronoi_plot_2d(vor2,ax=ax)
-#ax.plot( wind_ds.x_utm.values[valid],
-#         wind_ds.y_utm.values[valid],'go')
-
-
-
-if 0: 
-    # Load the full wind that was maybe the input for the filled 
-    # wnd:
-    sfei_wnd = pickle.load( open(os.path.join(dir_wind,
-                                              'SFEI_Wind_2000-2019.p'),
-                                 'rb')) 
-
-
-    # test and compare against existing
-    # Choose a sample day and interpolation location:
-    t_psts=np.arange(np.datetime64("2016-01-01 00:00"),
-                     np.datetime64("2016-06-01 00:00"),
-                     np.timedelta64(1,'h'))                                      
-    #utm=[570449., 4166144] # random spot near Hayward so we can compare to existing wind.
-    # on top of HWD
-    utm=[577513.17, 4168322.4]
-    
-    u,v = get_local_wind(None,utm,t_psts)
-    speed=np.sqrt(u**2 + v**2)
-    
-    plt.figure(5).clf()
-    fig,ax=plt.subplots(num=5)
-    
-    # these really don't compare that well.
-    # weights seem okay.
-    # first data point:
-    #  speed[0] = 2.57219
-    #  u[0]=-2.53  v[0]=-0.447
-    # so that's blowing *to* the WSW
-    # arctan2 gives 190, so that's compass direction
-    # 260, and switch to wind convention, that should be
-    # a wind direction of 80.
-    # these match up with the netcdf for HWD, and for the CSV.
-    wind_ds=load_obs_wind(2016)
-    stn=38
-    ds_u=wind_ds.u10.isel(station=stn).values
-    ds_v=wind_ds.v10.isel(station=stn).values
-    ds_speed=np.sqrt(ds_u**2 + ds_v**2)
-
-    if 0: # plot speed
-        ax.plot(t_psts,speed,label='local')
-        ax.plot(wnd.ts_pst, wnd.spd,label='orig')
-        ax.plot(wind_ds.time, ds_speed,label='Netcdf HWD')
-    else:
-        ax.plot(t_psts,u,label='local u')
-        ax.plot(t_psts,v,label='local v')
-        ax.plot(wind_ds.time, ds_u,label='Netcdf HWD u')
-        ax.plot(wind_ds.time, ds_v,label='Netcdf HWD v')
-        
-        sfei_ts_pst=sfei_wnd.ts_pst
-        time_sel=((sfei_ts_pst>=np.datetime64("2016-01-01"))
-                 & (sfei_ts_pst<np.datetime64("2016-04-01")))
-        site_idx=sfei_wnd.sites.index('ASOS-HWD')
-        sfei_u=sfei_wnd.U[time_sel,site_idx]
-        sfei_v=sfei_wnd.V[time_sel,site_idx]
-        sfei_time=sfei_ts_pst[time_sel]
-        ax.plot(sfei_time,sfei_u,label='SFEI Wind u')
-        ax.plot(sfei_time,sfei_v,label='SFEI Wind v')
-        
-    ax.legend(loc='upper left')
-    
 
 #%%
 def get_global_ts(time_pst,source_time,source_value):
@@ -584,94 +508,17 @@ for site in sites:
     rawdfs.append(rawdf)
     station_dfs[site] = rawdf
    
-#%%
-
-if 0: 
-    # Verification of tidal harmonic water level between DCR code,
-    # model harmonics, and NOAA Redwood
-    from stompy.io.local import noaa_coops
-    noaa_ds=noaa_coops.coops_dataset(9414523,
-                                     start_date=np.datetime64("2014-01-01"),
-                                     end_date  =np.datetime64("2014-06-01"),
-                                     products=['water_level'],days_per_request='M',
-                                     cache_dir='cache')
-    # Check for timezone issues between new harmonics and old
-    # For stage easy to corroborate with NOAA
-    # Looks like there is probably a 1 hour error in the original WL data,
-    # which came from Redwood City.
-    # Model is about 20 minutes early. 
-    
-    fig=plt.figure(2)
-    fig.set_size_inches([6,4],forward=True)
-    fig.clf()
-    rawdf=station_dfs['San_Mateo_Bridge']
-    
-    # What does the model think about Redwood City?
-    h_rw,u_rw = get_local_tides(site='Redwood City',utm=[569502., 4151450.],
-                                time_pst=rawdf.ts_pst)
-    
-    # account for 1 hr error in original data:
-    plt.plot(rawdf.ts_pst+np.timedelta64(1,'h'),
-             rawdf.wl,label='wl orig')
-    plt.plot(rawdf.ts_pst,rawdf.h_tide_local,label='wl local harm.')
-    plt.plot(rawdf.ts_pst,
-             h_rw,label='Redwood wl local harm.')
-    plt.plot(noaa_ds.time - np.timedelta64(8,'h'), noaa_ds.water_level.isel(station=0),
-             label='NOAA Redwood')
-    
-    plt.legend()
-    plt.axis((16082.308550534273, 16083.723863767034, -0.866859496789758, 3.1840823906537725))
-    fig.autofmt_xdate()
-    fig.savefig(os.path.join(dir_gamfigs,'waterlevel-compare.png'))
-    
-if 0:
-    # Same, but for velocity
-    fig=plt.figure(3)
-    fig.set_size_inches([6,4],forward=True)
-    fig.clf()
-    rawdf=station_dfs['San_Mateo_Bridge']
-    
-    plt.plot(rawdf.ts_pst + np.timedelta64(1,'h'),
-             rawdf.tdvel,label='tdvel orig')
-    plt.plot(rawdf.ts_pst,rawdf.u_tide_local,label='u local harm.')
-    
-    plt.legend()
-    plt.axis((16081.564648308466, 16084.065940314722, -1.2748613223051328, 1.355745929983363))
-    fig.autofmt_xdate()
-    fig.savefig(os.path.join(dir_gamfigs,'tdvel-compare.png'))
-    
-#%%
-
 dest_dir="../DataFit00"
 if not os.path.exists(dest_dir):
     os.makedirs(dest_dir)
 
-if 0: # write a giant master csv
-    station_df=pd.concat(rawdfs)
-    # A bunch of those covariates we don't have long time series for...
-    # looks like wind, tdvel, wl, nd delta outflow all have about the 
-    # same number of entries. storm has about double those.
-    
-    # Trim out missing SSC or covariate data
-    missing=( station_df['ssc_mgL'].isnull()
-             | station_df['usgs_lf'].isnull()
-             | station_df['wind'].isnull()
-             | station_df['tdvel'].isnull()
-             | station_df['storm'].isnull()
-             | station_df['delta'].isnull() )
-    
-    station_df_notnull=station_df[~missing]
-    
-    # This file is enormous, and unnecessary unless we fit a global model
-    station_df_notnull.to_csv(os.path.join(dest_dir,"model-inputs.csv"))
-    
 for site in station_dfs:
     df=station_dfs[site]
     valid=df['ssc_mgL'].notnull().values
     for required in ['usgs_lf','wind','tdvel','storm','delta']:
         valid=valid & df[required].notnull()
     print(f"Site {site}: {valid.sum()} / {len(valid)}  ({100*valid.sum()/len(valid):.1f}%) valid")
-    df_valid=df[valid]
-    df_valid.to_csv(os.path.join(dest_dir,f'model-inputs-valid-{site}.csv'))
+    #df_valid=df[valid]
+    #df_valid.to_csv(os.path.join(dest_dir,f'model-inputs-valid-{site}.csv'))
     df.to_csv(os.path.join(dest_dir,f'model-inputs-{site}.csv'))
     

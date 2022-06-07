@@ -39,10 +39,8 @@ from sklearn.linear_model import LinearRegression
 from math import e
 
 # Analysis sites
-# Note that Golden Gate Bridge does not have recent enough data (2000 forward) to overlap with the predictor data set (2000-2020)
-#sites = ['Mallard_Island','Mare_Island_Causeway','Point_San_Pablo','Richmond_Bridge',
-#         'Dumbarton_Bridge','San_Mateo_Bridge']
-
+# Note that Golden Gate Bridge does not have recent enough data (2000 forward) 
+# to overlap with the predictor data set (2000-2020)
 sites = ['Alcatraz_Island','Alviso_Slough','Benicia_Bridge','Carquinez_Bridge','Channel_Marker_01',
          'Channel_Marker_09','Channel_Marker_17','Corte_Madera_Creek','Dumbarton_Bridge',
          'Mallard_Island','Mare_Island_Causeway','Point_San_Pablo','Richmond_Bridge','San_Mateo_Bridge']
@@ -89,9 +87,30 @@ dir_output = data_root+'/Data_Constructed_SSC_and_Kd_RH'
 dir_gamfigs = data_root+'/Figures_GAM_Components_RH'
 dir_ssc2kdfigs = data_root+'/Figures_ssc2kd_fits_RH'
 
+#%%
+
+
+# Update GAM:
+# ( "te(tide_hour,wl_rms) "
+#   " + te(glbl_log10_ssc_mgL, tide_hour) "
+#   " + te(wind_u_ante,wind_v_ante) "
+#   " + s(delta,constraints='monotonic_inc') "
+#   " + te(storm,wl)"
+#   " + s(tdvel)"
+# ),
+
+# Trim the code below to handle just these inputs.
+
+
 # %% Load forcing data
 # Average to the output time step, as needed
 # Interpolate day flow data, as needed
+
+
+
+
+#%%
+
 
 # Load and handle wind data
 wnd = pickle.load(open(file_wind,'rb')) # time series is complete
@@ -334,7 +353,33 @@ for site in sites:
     rawdf['wl'] = get_tide_elevation(site=site,utm=utm,time_pst=rawdf.ts_pst)
     rawdf['storm'] = get_trib_flow(site=site,utm=utm,time_pst=rawdf.ts_pst)
     rawdf['delta'] = get_delta_flow(site=site,utm=utm,time_pst=rawdf.ts_pst)    
-        
+    
+    
+    
+    
+    # brought in from RH_fit_pygam.py
+    rawdf['wl_rms']=np.sqrt( filters.lowpass_fir(rawdf['wl']**2, 60 ))
+    
+    
+    
+    rawdf['tide_hour'] = utils.hour_tide(utils.to_dnum(rawdf.ts_pst.values),
+                                         u=src['u_tide_local'])
+    rawdf['wind_u_ante']=antecedent(rawdf['wind_u_local'],30)
+    rawdf['wind_v_ante']=antecedent(rawdf['wind_v_local'],30)
+
+    Xglobal=rawdf[ggam.pred_vars]
+    valid=np.all( Xglobal.notnull().values, axis=1)
+    gpred=np.full(len(rawdf),np.nan)
+    gpred[valid]=ggam.predict(Xglobal.values[valid,:])
+    rawdf['glbl_log10_ssc_mgl']=gpred
+
+
+    
+    
+    
+
+
+    
     rawdfs.append(rawdf)
 
 station_df=pd.concat(rawdfs)
@@ -357,13 +402,14 @@ station_df_notnull=station_df[~missing]
 
 # For starters all covariates handled at the station level, so already
 # filled in.
-# Write to global csv, ready for mgcv.
 
 dest_dir="../DataFit00"
 if not os.path.exists(dest_dir):
     os.makedirs(dest_dir)
 station_df_notnull.to_csv(os.path.join(dest_dir,"model-inputs.csv"))
     
+
+
 
 ## DR code below
 # %% Loop over sites, build input data structure, build a model
