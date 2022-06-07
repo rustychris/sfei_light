@@ -3,23 +3,24 @@
 Created on Tue Nov 10 10:28:09 2020
 
 @author: derekr
+
+This script builds single observational SSC time-series from the scattering
+of raw SSC and turbidity files available at each site/sub-folder shown
+in "...\TWDR_Method_fy21\Data_SSC_Raw."
+
+This script uses the meta data file DataInfo_Raw_LightFieldData.xlsx
+to handle different raw data file types. 
+
+Time-series are built around the Priority=1 reference sensor. 
+SSC data from all other sensors are normalized to the Priority1 station using
+a log-linear fit between the two sensors' overlapping data. If there are no overlapping
+data (San Mateo Bridge, only), the unconverted SSC data are used. If only turbidity data
+are available, the turbidity data are converted to SSC using a conversion calculated
+from a linear fit of whatever overlapping SSC and turbidity data have already been incorporated. 
+The converted turbidity data, now as SSC, are then normalized to the reference station, 
+as with all stations. Plots and output CSVs (with flags marking priority stations are 
+written to Data_SSC_Processed
 """
-# This script builds single observational SSC time-series from the scattering
-# of raw SSC and turbidity files available at each site/sub-folder shown
-# in "...\TWDR_Method_fy21\Data_SSC_Raw."
-
-# This script uses the meta data file DataInfo_Raw_LightFieldData.xlsx
-# to handle different raw data file types. 
-
-# Time-series are built around the Priority=1 reference sensor. 
-# SSC data from all other sensors are normalized to the Priority1 station using
-# a log-linear fit between the two sensors' overlapping data. If there are no overlapping
-# data (San Mateo Bridge, only), the unconverted SSC data are used. If only turbidity data
-# are available, the turbidity data are converted to SSC using a conversion calculated
-# from a linear fit of whatever overlapping SSC and turbidity data have already been incorporated. 
-# The converted turbidity data, now as SSC, are then normalized to the reference station, 
-# as with all stations. Plots and output CSVs (with flags marking priority stations are 
-# written to Data_SSC_Processed
 
 
 import pandas as pd
@@ -36,10 +37,12 @@ TimeStep = 15 # minutes, output time step
 
 MinOverlap= 100 # minimum overlapping points for any linear regression
 
-dir_parent = r'D:\My Drive\1_Nutrient_Share\1_Projects_NUTRIENTS\07_FY21_NMS_Projects\FY2021_Mod_SedTransp_Light\3_ProjectWork_Analysis_Reporting\TWDR_Method_fy21\Data_SSC_Raw'
+dir_parent = '../Data_SSC_Raw'
 file_datainfo = os.path.join(dir_parent,'DataInfo_Raw_LightFieldData.xlsx')
 
-dir_output = r'D:\My Drive\1_Nutrient_Share\1_Projects_NUTRIENTS\07_FY21_NMS_Projects\FY2021_Mod_SedTransp_Light\3_ProjectWork_Analysis_Reporting\TWDR_Method_fy21\Data_SSC_Processed'
+dir_output = '../Data_SSC_Processed'
+if not os.path.exists(dir_output):
+    os.makedirs(dir_output)
 
 # Default turb to ssc conversion (applied if no overlapping turbidity and SSC data are available to
 # back out a site-specific conversion from USGS)
@@ -48,7 +51,8 @@ turb2ssc_a = 4.35
 turb2ssc_b = 0.834
 
 # Notes
-# First file (primary sensor) must have SSC data, later ones can have just turbidity and will determine SSC-turb relationships as needed from primary site
+# First file (primary sensor) must have SSC data, later ones can have just turbidity
+# and will determine SSC-turb relationships as needed from primary site
 
 # %% Handle the data, site by site, and write output
 
@@ -56,8 +60,6 @@ info = pd.read_excel(file_datainfo,'data')
 sites = list(np.unique(info.site))
 
 for site in sites:
-#for site in ['Dumbarton_Bridge']:
-    
     data = DotMap() # Output data structure
         
     dir_site = os.path.join(dir_parent,site) # sub-folder with site-specific files
@@ -177,23 +179,23 @@ for site in sites:
                 ssctemp = np.ones(len(data.ssc_mgL))*np.nan # If so, build a temporary time-series
                 _,iA,iB = np.intersect1d(data.ts_pst,sraw[n]['ssc']['ts_pst'],return_indices=True)
                 ssctemp[iA] = sraw[n]['ssc']['ssc_mgL'][iB]
-            
             elif  bool(sraw[n]['turb']): # ok, then if no SSC is there turb data? There must be... or there'd be no row
-                
                 # we need a turb-SSC conversion for this site
                 ssctemp = np.ones(len(data.ssc_mgL))*np.nan
                 _,iA,iB = np.intersect1d(data.ts_pst,sraw[n]['turb']['ts_pst'],return_indices=True)
                 
                 # Try to make one using data incorporated from higher priority sensors
                 iOverlap = (~np.isnan(data.ssc_mgL)) & (~np.isnan(data.turb))
-                if np.sum(iOverlap)>MinOverlap: # If there's enough overlap for a conversion, fit a turb to ssc model, and make a temp SSC time-series
+                if np.sum(iOverlap)>MinOverlap:
+                    # If there's enough overlap for a conversion, fit a turb to ssc model,
+                    # and make a temp SSC time-series
                     lm = LinearRegression().fit(data.turb[iOverlap].reshape(-1, 1),data.ssc_mgL[iOverlap].reshape(-1, 1))
-                    ssctemp[iA] = sraw[n]['turb']['turb_fnu'][iB]*lm.coef_[0] + lm.intercept_[0] # get ssctemp from turbidity usng conversion 
-                # if no overlapping data, use a default conversino!
-                else: # use a default conversion!
+                    # get ssctemp from turbidity usng conversion 
+                    ssctemp[iA] = sraw[n]['turb']['turb_fnu'][iB]*lm.coef_[0] + lm.intercept_[0] 
+                else: # if no overlapping data, use a default conversion
                     ssctemp[iA] = turb2ssc_a * sraw[n]['turb']['turb_fnu'][iB]**turb2ssc_b
                     
-    #        data.turb[iA] = sraw[n]['turb']['turb_fnu'][iB] # merge this in anyway, but after the fitting
+            # data.turb[iA] = sraw[n]['turb']['turb_fnu'][iB] # merge this in anyway, but after the fitting
             
             # Ok, now shift this SSC chunk (which may have been converted from turb) to match the "primary" site
             iCross = (~np.isnan(data.ssc_mgL)) & (~np.isnan(ssctemp))

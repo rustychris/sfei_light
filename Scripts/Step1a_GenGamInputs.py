@@ -61,8 +61,9 @@ file_matchref = os.path.join(dir_matchref,'Match_Cruise_to_HFsite_for_ssc2kd_and
 
 
 # Paths of predictor/forcing variables. See readmes in paths for details
-dir_wind = data_root+'/Data_Forcing/Wind'
-file_wind = os.path.join(dir_wind,'ASOS-HWD_Wind_2000-2019.p')
+# Now using local wind
+#dir_wind = data_root+'/Data_Forcing/Wind'
+#file_wind = os.path.join(dir_wind,'ASOS-HWD_Wind_2000-2019.p')
 
 dir_tidevel = data_root+'/Data_Forcing/TidalVelocity'
 file_tidevel = os.path.join(dir_tidevel,'SMB_TidalVelocity.p')
@@ -93,12 +94,11 @@ for d in [dir_gamfigs, dir_ssc2kdfigs, dir_output]:
 # Interpolate day flow data, as needed
 
 # Load and handle wind data
-wnd = pickle.load(open(file_wind,'rb')) # time series is complete
-step = wnd.ts_pst[1] - wnd.ts_pst[0]
-window = int(np.timedelta64(OutputTimeStep,'h')/step)
-if window > 1: # smooth the data if the input time step is smaller than the output step
-    wnd.spd = pd.Series(wnd.spd).rolling(window=window,min_periods=1).mean().to_numpy()
-
+#wnd = pickle.load(open(file_wind,'rb')) # time series is complete
+#step = wnd.ts_pst[1] - wnd.ts_pst[0]
+#window = int(np.timedelta64(OutputTimeStep,'h')/step)
+#if window > 1: # smooth the data if the input time step is smaller than the output step
+#    wnd.spd = pd.Series(wnd.spd).rolling(window=window,min_periods=1).mean().to_numpy()
 
 # Load and handle tidal velocity data
 tdvel = pickle.load(open(file_tidevel,'rb')) # time series is complete
@@ -138,9 +138,9 @@ model.ts_pst = np.arange(OutputStart,OutputEnd+np.timedelta64(OutputTimeStep,'h'
 ##### Mesh in the  forcing time-series ####
 
 # Wind
-model.wnd = np.ones(len(model.ts_pst))*np.nan
-_,iA,iB = np.intersect1d(model.ts_pst,wnd.ts_pst,return_indices=True)
-model.wnd[iA] = wnd.spd[iB]
+#model.wnd = np.ones(len(model.ts_pst))*np.nan
+#_,iA,iB = np.intersect1d(model.ts_pst,wnd.ts_pst,return_indices=True)
+#model.wnd[iA] = wnd.spd[iB]
 
 # tidal velocity
 model.tdvel = np.ones(len(model.ts_pst))*np.nan
@@ -404,9 +404,9 @@ def get_global_ts(time_pst,source_time,source_value):
     result[iA] = source_value[iB]
     return result
 
-def get_wind(site=None,utm=None,time_pst=None):
-    return get_global_ts(time_pst=time_pst,
-                         source_time=wnd.ts_pst,source_value=wnd.spd)
+#def get_wind(site=None,utm=None,time_pst=None):
+#    return get_global_ts(time_pst=time_pst,
+#                         source_time=wnd.ts_pst,source_value=wnd.spd)
 
 def get_tide_velocity(site=None,utm=None,time_pst=None):
     return get_global_ts(time_pst=time_pst,
@@ -462,7 +462,7 @@ for site in sites:
     # per-site covariate handling:
     rawdf['usgs_lf']=cruise_ssc_at_site(site,rawdf.ts_pst)
     
-    rawdf['wind'] = get_wind(site=site,utm=utm,time_pst=rawdf.ts_pst)
+    # rawdf['wind'] = get_wind(site=site,utm=utm,time_pst=rawdf.ts_pst)
     rawdf['tdvel'] = get_tide_velocity(site=site,utm=utm,time_pst=rawdf.ts_pst)
     rawdf['wl'] = get_tide_elevation(site=site,utm=utm,time_pst=rawdf.ts_pst)
     rawdf['storm'] = get_trib_flow(site=site,utm=utm,time_pst=rawdf.ts_pst)
