@@ -9,6 +9,7 @@ which can be used to generate an additional correlate for
 station models.
 @author: rusty
 """
+from contextlib import redirect_stdout
 
 import pandas as pd
 import os
@@ -116,7 +117,7 @@ def add_site_idx(df):
 add_site_idx(src)
     
 pred_vars,formula = parse_predictor(predictor)
-    
+dep_var='log10_ssc_mgL'
 all_vars=pred_vars+[dep_var,'ts_pst']    
 # check nan in pandas with notnull() to get robust handling of
 # non-float types.
@@ -133,7 +134,7 @@ xGood_train = df_train[pred_vars].values
 yGood_train = df_train[dep_var].values
 t_train=df_train['ts_pst'].values
 
-gam = LinearGAM(formula,**gam_params).fit(xGood_train,yGood_train)
+gam = LinearGAM(formula).fit(xGood_train,yGood_train)
 
 #print(gam.summary())
 # calculate RMSE against training and test data, see how that varies with
@@ -161,8 +162,8 @@ if 1: # Plot GAM fits
             XX = gam.generate_X_grid(term=i,n=npoints)
             feature=gam.terms[i].info['feature']
             # expand range to include test and train:
-            full_min=min( xGood_train[:,i].min(), xGood_test[:,i].min())
-            full_max=max( xGood_train[:,i].max(), xGood_test[:,i].max())
+            full_min=xGood_train[:,i].min()
+            full_max=xGood_train[:,i].max()
             XX[:,i] = np.linspace(full_min,full_max,XX.shape[0])
 
             ax.plot(XX[:, feature], gam.partial_dependence(term=i, X=XX))
@@ -176,8 +177,7 @@ if 1: # Plot GAM fits
     txts=[site,
           f"RMSE train: {rmse_train:.2f}",
           f"std.dev: {np.std(yGood_train):.2f}",
-          f"pseudo R$^2$: {rec['pseudoR2']:.3f}",
-          "params:",str(gam_params),
+          f"pseudo R$^2$: {gam.statistics_['pseudo_r2']['explained_deviance']:.3f}"
           ]
     txts.append('TERMS')
     term_wrapped= "\n".join( ["\n".join(textwrap.wrap(term.strip(),width=35,
@@ -195,7 +195,7 @@ if 1: # Plot GAM fits
 
 gam.pred_vars=pred_vars
 gam.dep_var=dep_var
-gam.err_var=err_var
+gam.err_var=dep_var
 
 with open('global-model.pkl','wb') as fp:
     pickle.dump(gam,fp)
@@ -207,7 +207,9 @@ test1=gam.predict(xGood_train)
 test2=gam2.predict(xGood_train)
 
 assert np.allclose(test1,test2)
+            
 with open('global-model.txt','wt') as fp:
-    fp.write(gam.summary())
+    with redirect_stdout(fp):
+        gam.summary()
 
           

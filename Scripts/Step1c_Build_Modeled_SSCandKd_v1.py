@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 from matplotlib.dates import date2num
 import pickle
 
-from stompy import utils
+from stompy import utils, memoize, filters
 import seaborn as sns
 from dotmap import DotMap
 from sklearn.model_selection import train_test_split
@@ -38,6 +38,7 @@ import statsmodels.formula.api as smf
 from pygam import LinearGAM, s, l, te
 from sklearn.linear_model import LinearRegression
 from math import e
+
 
 import gam_common
 from gam_common import sites, OutputTimeStep, OutputStart, OutputEnd
@@ -53,8 +54,8 @@ dir_gam_inputs=gam_common.data_dir
 
 # Path to file matching sites to USGS cruise sites 
 # this info used for building long-term trend in forcing data and for applying SSC to Kd conversion
-#dir_matchref = data_root
-#file_matchref = os.path.join(dir_matchref,'Match_Cruise_to_HFsite_for_ssc2kd_and_gamtrends.xlsx')
+dir_matchref = data_root
+file_matchref = os.path.join(dir_matchref,'Match_Cruise_to_HFsite_for_ssc2kd_and_gamtrends.xlsx')
 
 
 # Paths of predictor/forcing variables. See readmes in paths for details
@@ -71,8 +72,8 @@ dir_gam_inputs=gam_common.data_dir
 #file_delta = os.path.join(dir_inflows,'DayFlow_Q.p')
 #file_alameda = os.path.join(dir_inflows,'Alameda_Creek_Q.p')
 
-#dir_cruise = data_root+'/Data_Cruise'
-#file_cruisessc = os.path.join(dir_cruise,'Curated_SiteSpec_SSCandKD_2_to_36.p')
+dir_cruise = data_root+'/Data_Cruise'
+file_cruisessc = os.path.join(dir_cruise,'Curated_SiteSpec_SSCandKD_2_to_36.p')
 
 # Misc additional paths
 dir_output = data_root+'/Data_Constructed_SSC_and_Kd_RH'
@@ -80,6 +81,9 @@ dir_gamfigs = data_root+'/Figures_GAM_Components_RH'
 dir_ssc2kdfigs = data_root+'/Figures_ssc2kd_fits_RH'
 
 #%%
+
+def rmse(a,b):
+    return np.sqrt(np.mean( (a-b)**2))
 
 # Update GAM:
 # ( "te(tide_hour,wl_rms) "
@@ -136,11 +140,12 @@ dir_ssc2kdfigs = data_root+'/Figures_ssc2kd_fits_RH'
 #   deltaq = pickle.load(open(file_delta,'rb')) # time series is complete
 #   deltaq.ts_pst = np.arange(deltaq.ts[0],deltaq.ts[-1]+np.timedelta64(OutputTimeStep,'h'),np.timedelta64(OutputTimeStep,'h'))
 #   deltaq.q_cms = np.interp(date2num(deltaq.ts_pst),date2num(deltaq.ts),deltaq.q_cms)
-#   
-#   #Load cruise data, but handling is site-specific
-#   cruise = pickle.load(open(file_cruisessc,'rb'))
-#   matchref = pd.read_excel(file_matchref)
-#   
+
+#Load cruise data, but handling is site-specific
+# Still need this for SSC--Kd fits
+cruise = pickle.load(open(file_cruisessc,'rb'))
+matchref = pd.read_excel(file_matchref)
+
 #   # %% Build forcing data and model output time-series
 #   
 #   model = DotMap() # model data structure
@@ -337,7 +342,7 @@ g=grid()
 # production it's not that useful cache sites.
 @memoize.memoize(lru=15)
 def src_data(site):
-    src = pd.read_csv(os.path.join(data_dir,f"model-inputs-{site}.csv"),
+    src = pd.read_csv(os.path.join(gam_common.data_dir,f"model-inputs-{site}.csv"),
                       parse_dates=['ts_pst'])
     
     # spring-neap indicator:
@@ -354,12 +359,12 @@ def src_data(site):
     src['wind_u_ante']=antecedent(src['wind_u_local'],30)
     src['wind_v_ante']=antecedent(src['wind_v_local'],30)
     
-    utm=np.r_[ src.utm_e.values[0], src.utm_n.values[0] ]
-    W=waves.fetch_limited_waves(utm,g,
-                                src['wind_u_local'],src['wind_v_local'],
-                                eta=0.75)
-    src['wave_stress']=W['tau_w']
-    src['wave_stress_ante']=antecedent(W['tau_w'],3)
+    # utm=np.r_[ src.utm_e.values[0], src.utm_n.values[0] ]
+    # W=waves.fetch_limited_waves(utm,g,
+    #                             src['wind_u_local'],src['wind_v_local'],
+    #                             eta=0.75)
+    # src['wave_stress']=W['tau_w']
+    # src['wave_stress_ante']=antecedent(W['tau_w'],3)
     
     # Evaluate the global model for this station
     # Needs wl_rms as a global spring-neap indicator
@@ -432,11 +437,12 @@ for d in [dir_gamfigs, dir_ssc2kdfigs, dir_output]:
 # %% Loop over sites, build input data structure, build a model
 
 
-data = DotMap()
+#data = DotMap() # hopefully migrated away from DotMap in this script
 
 recs=[] # keep track of some metrics as we fit the models.
+dfs={} # site => DataFrame
 
-for site in sites:
+for site_i,site in enumerate(sites):
     rec=dict(site=site)
     recs.append(rec)
     ###### Build the corresponding cruise time-series for the predictions ##### 
@@ -465,7 +471,6 @@ for site in sites:
     
     ########### Handle the observed SSC data ###################################
     df=src_data(site) # NEW
-    
     
     #rawdf = pd.read_csv(os.path.join(dir_sscdata,site+'Processed_15min.csv'))
     #rawdf['ts_pst'] = pd.to_datetime(rawdf['ts_pst'])
@@ -546,7 +551,8 @@ for site in sites:
     #   #    gam = LinearGAM(s(0)+s(1)+s(2)+s(3)+s(4)).fit(X,Y)
 
     # Models now work in log-space
-    src['log_ssc_mgL']=np.log10(src['ssc_mgL'].clip(1.0))
+    dep_var='log10_ssc_mgL'
+    df[dep_var]=np.log10(df['ssc_mgL'].clip(1.0))
 
     predictor=( "te(tide_hour,wl_rms) "
                 " + te(glbl_log10_ssc_mgL, tide_hour) "
@@ -563,19 +569,25 @@ for site in sites:
     # check nan in pandas with notnull() to get robust handling of
     # non-float types.
     # see RH_fit_pygam for testing model skill with various train/test approaches.
-    df_train=src[ np.all(src[all_vars].notnull().values,axis=1) ]
+    df_train=df[ np.all(df[all_vars].notnull().values,axis=1) ]
     xGood_train = df_train[pred_vars].values
     yGood_train = df_train[dep_var].values
     t_train=df_train['ts_pst'].values
     weights=1e-2 * np.ones_like(yGood_train) # reduce GAM overfitting.
-    gam = (LinearGAM(formula,**gam_params)
+    gam = (LinearGAM(formula)
            .fit(xGood_train,yGood_train,weights=weights))    
-    #print(gam.summary())
     pred_train=gam.predict(xGood_train)
 
-    is_valid=np.all(src[pred_vars+['ts_pst']].notnull().values,axis=1)
-    df_valid=src[ is_valid ]
+    # Some inputs are not available for all time, which is okay but 
+    is_valid=np.all(df[pred_vars+['ts_pst']].notnull().values,axis=1)
+    df_valid=df[ is_valid ]
+
     pred_valid = gam.predict(df_valid[pred_vars].values)
+    # Sanity check, that nobody is discarding nan rows
+    assert np.all(np.isfinite(pred_valid)) and (len(pred_valid)==len(df_valid))
+    df['pred_ssc_mgL'] = np.nan # same as np.full(len(data[site].ts_pst),np.nan)
+    # Back to linear.
+    df['pred_ssc_mgL'].values[is_valid] = 10**pred_valid
     
     rec['rmse_train'] = rmse(yGood_train,pred_train)
     rec['std_train'] = np.std(yGood_train)
@@ -584,6 +596,7 @@ for site in sites:
     rec['AIC']=gam.statistics_['AIC']
     rec['GCV']=gam.statistics_['GCV']
 
+    
     def term_label(ti):
         if gam.terms[ti].istensor:
             return " x ".join([pred_vars[t['feature']]
@@ -631,35 +644,29 @@ for site in sites:
         txts=[site,
               f"RMSE train: {rec['rmse_train']:.2f}",
               f"pseudo R$^2$: {rec['pseudoR2']:.3f}",
-              f"AIC: {rec['AIC']:.3e}",
-              "params:",str(gam_params),
+              f"AIC: {rec['AIC']:.3e}"
               ]
         fig.text(0.01, 0.85,"\n".join(txts), va='top',fontsize=10)
         fig.subplots_adjust(right=0.99,left=0.2)
         fig.savefig(os.path.join(dir_gamfigs,site+'_gam_fits.png')) 
-
-    
-    data[site].gam_ssc = np.full(len(data[site].ts_pst),np.nan)
-    # Back to linear.
-    data[site].gam_ssc[is_valid] = 10**pred_valid
     
     
     ############################################################################
         
     ########### Generate model predictions for output time window ##############
     
-    # Cruise signal (seasonal variability, smoothed discrete samples)
-    model.cruise[site] = np.ones(len(model.ts_pst))*np.nan
-    _,iA,iB = np.intersect1d(model.ts_pst,cruiseset_ts,return_indices=True)
-    model.cruise[site][iA] = CruiseSet_SSC[iB]
-    
-    # Full set of forcing data, most variables the same for all sites, but the cruise forcing data varies by site
-    model.X = np.vstack( (model.wnd, model.tdvel, model.wl,
-                              model.localq, model.deltaq,model.cruise[site])).T
-     
-    # Get modeled SSC values                     
-    model.gam_ssc[site] = gam.predict(model.X)
-    model.gam_ssc[site][model.gam_ssc[site]<=0] = 0.1 # make negative SSC = 0.1 mg/L
+    # # Cruise signal (seasonal variability, smoothed discrete samples)
+    # model.cruise[site] = np.ones(len(model.ts_pst))*np.nan
+    # _,iA,iB = np.intersect1d(model.ts_pst,cruiseset_ts,return_indices=True)
+    # model.cruise[site][iA] = CruiseSet_SSC[iB]
+    # 
+    # # Full set of forcing data, most variables the same for all sites, but the cruise forcing data varies by site
+    # model.X = np.vstack( (model.wnd, model.tdvel, model.wl,
+    #                           model.localq, model.deltaq,model.cruise[site])).T
+    #  
+    # # Get modeled SSC values                     
+    # model.gam_ssc[site] = gam.predict(model.X)
+    # model.gam_ssc[site][model.gam_ssc[site]<=0] = 0.1 # make negative SSC = 0.1 mg/L
     
     # Convert SSC to Kd using local regression of cruise SSC to cruise Kd
     # 
@@ -670,36 +677,26 @@ for site in sites:
 
     if 1: # statsmodels, report uncertainty, plot more info        
         # Fit with statsmodels to get some uncertainty info.
-        df=pd.DataFrame(dict(ssc=cruiseset[iCruise].ravel(),
-                             kd= cruiseset_kd[iCruise].ravel()))
+        cruise_df=pd.DataFrame(dict(ssc=cruiseset[iCruise].ravel(),
+                                    kd= cruiseset_kd[iCruise].ravel()))
         if 1: # limit the fit to when 4.5/Kd>0.5
-            select=4.5/df['kd'] > 0.5
-            print(f"{site}: limit fit to 4.5/Kd>0.5, retains {select.sum()} of {len(df)} samples")
-            df=df[select]
+            select=4.5/cruise_df['kd'] > 0.5
+            print(f"{site}: limit fit to 4.5/Kd>0.5, retains {select.sum()} of {len(cruise_df)} samples")
+            df_cruise=cruise_df[select]
         else:
             select=True
-        mod=smf.ols('np.log(kd) ~ np.log(ssc)',df)
+        mod=smf.ols('np.log(kd) ~ np.log(ssc)',cruise_df)
         fit=mod.fit() 
-        
-        pred=fit.get_prediction(pd.DataFrame(dict(ssc=model.gam_ssc[site])))    
-        model.gam_kd[site] = np.exp(pred.predicted_mean)
-    
-        x = np.linspace(0.01,np.nanmax(cruiseset),100)
-        pred=fit.get_prediction(pd.DataFrame(dict(ssc=x)))    
-        fig,ax = plt.subplots(figsize=(6,3)) 
-        ax.scatter(cruiseset[iCruise],cruiseset_kd[iCruise],3+4*select,imatch)
-        df_pred=pred.summary_frame() # mean, mean_se, {obs,mean}_ci_{lower,upper}
-        ax.plot(x,np.exp(df_pred['mean']),color='k')
-        ax.fill_between(x,
-                        np.exp(df_pred['obs_ci_lower']),
-                        np.exp(df_pred['obs_ci_upper']),
-                        color='tab:blue',alpha=0.1)
-        ax.fill_between(x,
-                        np.exp(df_pred['mean_ci_lower']),
-                        np.exp(df_pred['mean_ci_upper']),
-                        color='tab:blue',alpha=0.5)
-        ax.plot(x,np.exp(df_pred['mean']),color='k')
-        
+
+        # src, and thus pred_ssc_mgL, have not been clipped to OutputStart/End yet.
+        # so it's possibly, and okay, that there are some nans at this stage.
+        # but get_prediction() silently omits nans, so have to explicitly handle
+        # that.
+        pred_valid=df.pred_ssc_mgL.notnull()
+        pred_kd=fit.get_prediction(pd.DataFrame(dict(ssc=df.pred_ssc_mgL[pred_valid])))
+        df['pred_kd'] = np.nan
+        df['pred_kd'].values[pred_valid]=np.exp(pred_kd.predicted_mean)
+
         coef=np.exp(fit.params[0])
         exp=fit.params[1]
         cis=fit.conf_int().values # {intercept,exp} x {lower, upper}
@@ -710,63 +707,78 @@ for site in sites:
         rec['Kd_expt_low']=cis[1,0]
         rec['Kd_expt_high']=cis[1,1]
         
-        txts=[f'Kd = {coef:.3f} SSC$^{{{exp:.3f}}}$ */ {np.exp(np.std(fit.resid)):.3f}',
-              f' coef $\in$ [{np.exp(cis[0,0]):.3f},{np.exp(cis[0,1]):.3f}]',
-              f' exp $\in$ [{cis[1,0]:.3f},{cis[1,1,]:.3f}]']
+        if 1: # ssc-Kd errors
+            x = np.linspace(0.01,np.nanmax(cruiseset),100)
+            pred=fit.get_prediction(pd.DataFrame(dict(ssc=x)))    
+            fig,ax = plt.subplots(figsize=(6,3)) 
+            ax.scatter(cruiseset[iCruise],cruiseset_kd[iCruise],3+4*select,imatch)
+            df_pred=pred.summary_frame() # mean, mean_se, {obs,mean}_ci_{lower,upper}
+            ax.plot(x,np.exp(df_pred['mean']),color='k')
+            ax.fill_between(x,
+                            np.exp(df_pred['obs_ci_lower']),
+                            np.exp(df_pred['obs_ci_upper']),
+                            color='tab:blue',alpha=0.1)
+            ax.fill_between(x,
+                            np.exp(df_pred['mean_ci_lower']),
+                            np.exp(df_pred['mean_ci_upper']),
+                            color='tab:blue',alpha=0.5)
+            ax.plot(x,np.exp(df_pred['mean']),color='k')
+                
+            txts=[f'Kd = {coef:.3f} SSC$^{{{exp:.3f}}}$ */ {np.exp(np.std(fit.resid)):.3f}',
+                  f' coef $\in$ [{np.exp(cis[0,0]):.3f},{np.exp(cis[0,1]):.3f}]',
+                  f' exp $\in$ [{cis[1,0]:.3f},{cis[1,1,]:.3f}]']
 
-        
-    
-        ax.text(0.02,0.95,"\n".join(txts),transform=ax.transAxes,va='top')
-        ax.set_title(site + ' - CruiseSites:' + str(matchsites))
-        ax.set_xlabel('SSC (mg/l)')
-        ax.set_ylabel('K$_D$ (m$^{-1}$)')
-        fig.subplots_adjust(bottom=0.16)
-        fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_to_Kd_errs.png'))    
+            ax.text(0.02,0.95,"\n".join(txts),transform=ax.transAxes,va='top')
+            ax.set_title(site + ' - CruiseSites:' + str(matchsites))
+            ax.set_xlabel('SSC (mg/l)')
+            ax.set_ylabel('K$_D$ (m$^{-1}$)')
+            fig.subplots_adjust(bottom=0.16)
+            fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_to_Kd_errs.png'))    
 
     ############################################################################
     
-    # Plot the output
-    
-    fig,axs = plt.subplots(1,2,figsize=(13,3.5))
-    # RH: report RMSE here, too.
-    rmse=np.sqrt(np.nanmean( (data[site].gam_ssc-data[site].ssc)**2 ))
-    axs[0].plot(data[site].ts_pst,data[site].ssc,label='Observed (sensor)',color='k',zorder=1)
-    axs[0].plot(data[site].ts_pst,data[site].gam_ssc,label=f'Modeled (RMSE {rmse:.1f}mg/l)',
-                color='darkred',zorder=2)
-    for j in range(np.shape(cruiseset)[1]):
-        axs[0].scatter(cruiseset_ts,cruiseset[:,j],label='Discrete - USGS '+str(matchsites[j]),zorder=3+j,s=3)
-    axs[0].legend(loc='upper left')
-    axs[0].set_ylabel('SSC (mg/L)')
-    
-    axs[1].plot(model.ts_pst,model.gam_kd[site],label='Model Kd')
-    for j in range(np.shape(cruiseset)[1]):
-        axs[1].scatter(cruiseset_ts,cruiseset_kd[:,j],label='Discrete - USGS '+str(matchsites[j]),zorder=3+j,s=3)
-    axs[1].set_xlim((model.ts_pst[0],model.ts_pst[-1]))
-    axs[1].set_ylim((0,8))
-    fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_Kd_and_rmse.png'))    
+    if 1: # Plot the output
+        fig,axs = plt.subplots(1,2,figsize=(13,3.5))
+        # RH: report RMSE here, too.
+        linear_rmse=rmse(df.pred_ssc_mgL, df.ssc_mgL)
+        axs[0].plot(df.ts_pst,df.ssc_mgL,label='Observed (sensor)',color='k',zorder=1)
+        axs[0].plot(df.ts_pst,df.pred_ssc_mgL,label=f'Modeled (RMSE {linear_rmse:.1f} mg/l)',
+                    color='darkred',zorder=2)
+        for j in range(np.shape(cruiseset)[1]):
+            axs[0].scatter(cruiseset_ts,cruiseset[:,j],label='Discrete - USGS '+str(matchsites[j]),zorder=3+j,s=3)
+        axs[0].legend(loc='upper left')
+        axs[0].set_ylabel('SSC (mg/L)')
+
+        axs[1].plot(df.ts_pst,df.pred_kd,label='Model Kd')
+        for j in range(np.shape(cruiseset)[1]):
+            axs[1].scatter(cruiseset_ts,cruiseset_kd[:,j],label='Discrete - USGS '+str(matchsites[j]),zorder=3+j,s=3)
+        axs[1].set_xlim((df.ts_pst.values[0],df.ts_pst.values[-1]))
+        axs[1].set_ylim((0,8))
+        fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_Kd_and_rmse.png'))    
     
     ############### Create and write output #####################################
     output = {}
-    output['ts_pst'] = model.ts_pst # output for 2010-2019
-    output['ssc_mgL'] = model.gam_ssc[site].copy() # output is gam model
-    output['kd'] = model.gam_kd[site].copy() # output is gam model
-    output['kd_gam'] = model.gam_kd[site].copy() # keep kd from gam additionally to evaluate errors.
-    output['flag'] = np.ones(len(output['ts_pst']))*2 # flag for: 'from model' 
-    # over-write with real data, where available
-    _,iA,iB = np.intersect1d(output['ts_pst'],data[site].ts_pst,return_indices=True)
-    output['ssc_mgL'][iA] = data[site].ssc[iB].copy()
-    output['kd'][iA] = coef * data[site].ssc[iB].copy()**exp
-    output['flag'][iA] = 1 # flag for 'from observed high-freq SSC'
-    # re-over-write with gam model where observations introduced nans
-    iNaN = np.isnan(output['ssc_mgL']) # NaNs will be the same for ssc and kd since both built from observed ssc
-    output['ssc_mgL'][iNaN] = model.gam_ssc[site][iNaN].copy()
-    output['kd'][iNaN] = model.gam_kd[site][iNaN].copy()
-    output['flag'][iNaN] = 2
+    # goal is to write to CSV dense output with best available ssc and Kd,
+    # as well as the predicted values even when observations are available.
+    output['ts_pst'] = df.ts_pst # output for 2010-2019
+
+    output['ssc_mgL'] = df.ssc_mgL.combine_first(df.pred_ssc_mgL)
+    output['pred_ssc_mgL']=df.pred_ssc_mgL
+
+    output['flag'] = np.where(df.ssc_mgL.isnull(),2,1) # 1: observed, 2: predicted
+
+    output['kd'] = coef*df.ssc_mgL**exp # best available 
+    output['pred_kd'] = coef*(df.pred_ssc_mgL**exp) # strictly GAM predictions. ==df.pred_kd
     
     out = pd.DataFrame.from_dict(output)
+
+    sel=(out.ts_pst>=OutputStart)&(out.ts_pst<=OutputEnd)
+    out=out[sel]
+    assert np.all(out.ssc_mgL.notnull()),"Expected the trimmed output to be all valid"
     out.to_csv(os.path.join(dir_output,site+'_SSCandKd_Filled_'+str(OutputStart)[:4]+'_to_'+str(OutputEnd)[:4]+'.csv'),index=False)
     
     ############################################################################
+    dfs[site]=df
 
 all_fits=pd.DataFrame(recs)
 all_fits.to_csv(os.path.join(dir_output,"fit_summary.csv"))
@@ -796,6 +808,10 @@ def plot_ssc_scatter(pred,obs,lowpass=None,num=100):
         DESCRIPTION.
 
     """
+    # shed any pandas
+    pred=np.asarray(pred)
+    obs=np.asarray(obs)
+    
     if lowpass is not None:
         winsize=int(round(lowpass/OutputTimeStep))
         if winsize<=1:
@@ -863,8 +879,8 @@ def plot_ssc_scatter(pred,obs,lowpass=None,num=100):
     return fig
 
 for site in sites:
-    pred=data[site].gam_ssc
-    obs =data[site].ssc
+    pred=dfs[site].pred_ssc_mgL
+    obs =dfs[site].ssc_mgL
     fig=plot_ssc_scatter(pred,obs,lowpass=60)
     fig.savefig(os.path.join(dir_ssc2kdfigs,site+'_ssc_scatter_LP60h.png'))
     
@@ -878,8 +894,9 @@ recs=[]
 all_obs=[]
 all_obs_lp=[]
 for site in sites:
-    pred=data[site].gam_ssc
-    obs =data[site].ssc
+    df=dfs[site]
+    pred=df.pred_ssc_mgL
+    obs =df.ssc_mgL
     bias = np.nanmean(pred-obs)
     ubrmse = np.sqrt( np.nanmean( (pred-bias-obs)**2))
     valid=np.isfinite(pred-obs)
