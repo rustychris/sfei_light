@@ -25,9 +25,9 @@ import os
 Alcatraz_to_GoldenGate = 0.75 # estimate Golden Gate as f(Alcatraz)
 Alcatraz_to_Ocean = 0.5 # estimate Ocean as f(Alcatraz)
 
-dir_data = r'D:\My Drive\1_Nutrient_Share\1_Projects_NUTRIENTS\07_FY21_NMS_Projects\FY2021_Mod_SedTransp_Light\3_ProjectWork_Analysis_Reporting\TWDR_Method_fy21\Data_Kd_Shifted'
+dir_data = '../Data_Kd_Shifted_RH'
 
-dir_coords = r'D:\My Drive\1_Nutrient_Share\1_Projects_NUTRIENTS\07_FY21_NMS_Projects\FY2021_Mod_SedTransp_Light\3_ProjectWork_Analysis_Reporting\TWDR_Method_fy21'
+dir_coords = '..'
 file_coords = os.path.join(dir_coords,'Station_Polygon_Coordinates.csv')
 
 # %%

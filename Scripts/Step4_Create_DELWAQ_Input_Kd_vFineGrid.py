@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from stompy.model.delft import dfm_grid
 import pandas as pd
 from stompy.spatial import wkb2shp
+from stompy import utils
 from shapely import geometry
 import numpy as np
 import pandas as pd
@@ -41,16 +42,13 @@ version = 'Kd_PropShift' # Kd Kd_PropShift or Kd_DiffShift
 
 SmoothIterations = 50 # nearest-neighbor averagin iterations to smooth polygon time-series
 
-dir_input = r'D:\My Drive\1_Nutrient_Share\1_Projects_NUTRIENTS\07_FY21_NMS_Projects\FY2021_Mod_SedTransp_Light\3_ProjectWork_Analysis_Reporting\TWDR_Method_fy21\Data_Kd_Shifted'
+dir_input = '../Data_Kd_Shifted_RH'
 file_input = os.path.join(dir_input,version+'_LongTermHourly.nc')
 
-dir_output = r'C:\hello' # errors writing to Google Drive for some reason, xarray sucks...
+dir_output = '../Data_DELWAQ_Inputfiles_RH' # errors writing to Google Drive for some reason, xarray sucks...
 file_output = os.path.join(dir_output,version+'_forDELWAQ_' + pd.to_datetime(start).strftime('%Y%m%d')+'_to_'+pd.to_datetime(end).strftime('%Y%m%d')+'.nc')
 
-#dir_output = r'D:\My Drive\1_Nutrient_Share\1_Projects_NUTRIENTS\07_FY21_NMS_Projects\FY2021_Mod_SedTransp_Light\3_ProjectWork_Analysis_Reporting\TWDR_Method_fy21\Data_DELWAQ_InputFiles'
-#file_output = os.path.join(dir_output,version+'_forDELWAQ_' + pd.to_datetime(start).strftime('%Y%m%d')+'_to_'+pd.to_datetime(end).strftime('%Y%m%d')+'.nc')
-
-dir_grid = r'D:\My Drive\1_Nutrient_Share\1_Projects_NUTRIENTS\07_FY21_NMS_Projects\FY2021_Mod_SedTransp_Light\3_ProjectWork_Analysis_Reporting\TWDR_Method_fy21\Grid'
+dir_grid = '../Grid'
 file_grid = os.path.join(dir_grid,'wy2013c_waqgeom.nc')
 
 
@@ -72,7 +70,7 @@ extrap_polygons=wkb2shp.shp2geom(os.path.join(dir_grid,'light_field_polygons.shp
 # Compute masks of where each polygon from extrap_polygons intersects with the Delwaq grid 
 # precompute masks for when we apply this many times
 # probably takes 20sec
-masks=[ g.select_cells_intersecting(p)
+masks=[ g.select_cells_intersecting(p, by_center='centroid')
         for p in extrap_polygons['geom'] ]
 
 # Setup the pieces required for neighbor smoothing of cells 
@@ -102,7 +100,7 @@ index2 = np.where(pd.to_datetime(ds.time.values).to_numpy() == end)[0] # end tim
 
 counter = 1
 #for day in days[2866:len(days)]:
-for day in days[index1[0]:index2[0]+1]: 
+for day in utils.progress(days[index1[0]:index2[0]+1]): 
     
     f_polyfill=np.zeros(g.Ncells(),'f8') # zeros array with the length of the number of cells in the Delwaq grid 
     
@@ -130,20 +128,20 @@ for day in days[index1[0]:index2[0]+1]:
 
 # This fails... maybe a stompy change
 # Define results plotting function 
-#def plot_result(num,title,values):
-#    plt.figure(num).clf()
-#    ccoll=g.plot_cells(values=values,cmap='CMRmap_r') #'copper_r' 
-#
-#    scat = plt.scatter(ds.utm_E.values, ds.utm_N.values, cmap = 'CMRmap_r',  alpha = 0, s = 40, zorder=2)    
-##    scat.set_edgecolor('k')
-#    scat.set_clim(ccoll.get_clim())
-#    
-#    plt.gca().set_title(title)
-#    plt.gca().set_facecolor('Gainsboro')
-#    plt.axis('equal')
+def plot_result(num,title,values):
+    plt.figure(num).clf()
+    ccoll=g.plot_cells(values=values,cmap='CMRmap_r') #'copper_r' 
+
+    scat = plt.scatter(ds.utm_E.values, ds.utm_N.values, cmap = 'CMRmap_r',  alpha = 0, s = 40, zorder=2)    
+    # scat.set_edgecolor('k')
+    scat.set_clim(ccoll.get_clim())
     
-#plot_result(1,'Polygon fill smooth',f_polyfill) # plot un-smoothing result
-#plot_result(2,'Polygon fill smooth',newrow) # plot un-smoothing result
+    plt.gca().set_title(title)
+    plt.gca().set_facecolor('Gainsboro')
+    plt.axis('equal')
+
+plot_result(1,'Polygon fill smooth',f_polyfill) # plot un-smoothing result
+plot_result(2,'Polygon fill smooth',newrow) # plot un-smoothing result
 
 
 #%% Generate a netcdf file for DELWAQ input
