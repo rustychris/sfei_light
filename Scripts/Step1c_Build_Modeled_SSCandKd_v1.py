@@ -578,7 +578,8 @@ for site_i,site in enumerate(sites):
            .fit(xGood_train,yGood_train,weights=weights))    
     pred_train=gam.predict(xGood_train)
 
-    # Some inputs are not available for all time, which is okay but 
+    # Some inputs are not available for all time, which is okay but will
+    # check later that we cover the OutputStart/End period.
     is_valid=np.all(df[pred_vars+['ts_pst']].notnull().values,axis=1)
     df_valid=df[ is_valid ]
 

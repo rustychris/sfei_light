@@ -448,8 +448,23 @@ for site in sites:
     winsize=5 # odd avoids offsets 
     rawdf['ssc_mgL'] = filters.lowpass_fir(rawdf.ssc_mgL.values,winsize)
     # And *now* downsample. while mean() silently drops ts_pst b/c it doesn't
-    # know how to average time, here it is explicit. 
+    # know how to average time, here it is explicit.
+
+    # Make sure this spans the OutputStart/End interval
+    # Expand rawdf to reflect the period of data *and* the output.
+    # i.e. this is going to be a file both used to train the GAM, and to evaluate it
+    # for the output period. in some cases like Carquinez Bridge that's a bit wasteful
+    # since there is a long gap between the training data and the output data, but
+    # not worth the complexity.
+    pieces=[]
+    if OutputStart<rawdf.ts_pst.values[0]:
+        pieces.append(pd.DataFrame([dict(ts_pst=OutputStart)]))
+    pieces.append(rawdf)
+    if OutputEnd>rawdf.ts_pst.values[-1]:
+        pieces.append(pd.DataFrame([dict(ts_pst=OutputEnd)]))
+    rawdf=pd.concat(pieces)
     rawdf=rawdf.resample('h',on='ts_pst').first().drop('ts_pst',axis=1).reset_index()
+    
         
     rawdf['site']=site
     utm=[station_coords.loc[site,'utm_e'],

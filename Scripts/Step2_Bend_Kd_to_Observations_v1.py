@@ -188,7 +188,7 @@ for site in sites:
     data = DotMap()
     data.ts_pst = pd.to_datetime(inp['ts_pst']).to_numpy()
     data.kd = inp['kd'].to_numpy()
-    data.kd_gam = inp['kd_gam'].to_numpy()
+    data.kd_gam = inp['pred_kd'].to_numpy()
     data.flag = inp['flag'].to_numpy()
     data.kd_obs = np.where(data.flag==1,data.kd,np.nan)
     
@@ -199,7 +199,7 @@ for site in sites:
         matchsites = (matchref['CruiseStations'][iSite].values[0],)
     
     # start with an overshoot time-series; so we can mesh with both the model fit and with the prediction data
-    cruise_ts = data.ts_pst
+    cruise_ts = data.ts_pst # DBG: this is coming up empty
     cruise_kd_set = np.ones((len(cruise_ts),len(matchsites)))*np.nan
 
     j = 0
